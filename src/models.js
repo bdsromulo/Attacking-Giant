@@ -1,35 +1,121 @@
 import * as THREE from 'three';
 import { rand, pick } from './util.js';
 import { getRaotGeo } from './raot_meshes.js';
+import { getBlenderGeo } from './assets.js';
 
 const matCache = new Map();
 export function mat(color, opts = {}) {
   const key = color + JSON.stringify(opts);
-  if (!matCache.has(key)) matCache.set(key, new THREE.MeshLambertMaterial({ color, ...opts }));
+  if (!matCache.has(key)) {
+    matCache.set(key, new THREE.MeshStandardMaterial({ color, roughness: 0.68, metalness: 0.04, ...opts }));
+  }
   return matCache.get(key);
 }
 
-let vcolMat = null;
+let vcolClothMat = null;
+let vcolGearMat = null;
 let vcolBladeMat = null;
-function getRaotMat(emissive = '#000000') {
-  if (emissive !== '#000000') {
-    if (!vcolBladeMat) vcolBladeMat = new THREE.MeshLambertMaterial({ vertexColors: true, emissive });
-    return vcolBladeMat;
+
+function getRaotClothMat() {
+  if (!vcolClothMat) {
+    vcolClothMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.66,
+      metalness: 0.04,
+    });
   }
-  if (!vcolMat) vcolMat = new THREE.MeshLambertMaterial({ vertexColors: true });
-  return vcolMat;
+  return vcolClothMat;
 }
 
-function raotMesh(partName, x = 0, y = 0, z = 0, emissive = '#000000') {
+function getRaotGearMat() {
+  if (!vcolGearMat) {
+    vcolGearMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.34,
+      metalness: 0.58,
+    });
+  }
+  return vcolGearMat;
+}
+
+function getRaotBladeMat() {
+  if (!vcolBladeMat) {
+    vcolBladeMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.16,
+      metalness: 0.86,
+      emissive: new THREE.Color('#203040'),
+      emissiveIntensity: 0.55,
+    });
+  }
+  return vcolBladeMat;
+}
+
+const GEAR_PARTS = new Set(['odm_gear', 'sword_handle', 'apg_gun', 'thunder_spear']);
+
+function raotMesh(partName, x = 0, y = 0, z = 0, isBlade = false) {
   const geo = getRaotGeo(partName);
-  const m = new THREE.Mesh(geo, getRaotMat(emissive));
+  const material = isBlade ? getRaotBladeMat() : (GEAR_PARTS.has(partName) ? getRaotGearMat() : getRaotClothMat());
+  const m = new THREE.Mesh(geo, material);
   m.position.set(x, y, z);
   m.castShadow = true;
+  m.receiveShadow = true;
   return m;
 }
 
+// Cache de geometrias espelhadas em X com winding/normais corretos (evita matriz de escala negativa)
+const mirroredCache = new Map();
+function mirrorXGeo(geo) {
+  if (mirroredCache.has(geo)) return mirroredCache.get(geo);
+  const g = geo.clone();
+  const pos = g.getAttribute('position');
+  const nrm = g.getAttribute('normal');
+  for (let i = 0; i < pos.count; i++) {
+    pos.setX(i, -pos.getX(i));
+    if (nrm) nrm.setX(i, -nrm.getX(i));
+  }
+  if (g.index) {
+    const idx = g.index.array;
+    for (let i = 0; i < idx.length; i += 3) {
+      const tmp = idx[i + 1];
+      idx[i + 1] = idx[i + 2];
+      idx[i + 2] = tmp;
+    }
+    g.index.needsUpdate = true;
+  } else {
+    for (const name of Object.keys(g.attributes)) {
+      const attr = g.attributes[name];
+      const item = attr.itemSize;
+      const arr = attr.array;
+      for (let i = 0; i < pos.count; i += 3) {
+        for (let c = 0; c < item; c++) {
+          const i1 = (i + 1) * item + c;
+          const i2 = (i + 2) * item + c;
+          const tmp = arr[i1];
+          arr[i1] = arr[i2];
+          arr[i2] = tmp;
+        }
+      }
+      attr.needsUpdate = true;
+    }
+  }
+  g.parameters = { ...geo.parameters };
+  mirroredCache.set(geo, g);
+  return g;
+}
+
+function withWhiteVertexColors(geo) {
+  if (!geo.getAttribute('color')) {
+    const n = geo.attributes.position.count;
+    const cols = new Float32Array(n * 3);
+    cols.fill(0.95);
+    geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  }
+  return geo;
+}
+
 export function boxMesh(sx, sy, sz, material, x = 0, y = 0, z = 0) {
-  const geo = new THREE.BoxGeometry(sx, sy, sz);
+  const geo = withWhiteVertexColors(new THREE.BoxGeometry(sx, sy, sz));
   geo.parameters = { width: sx, height: sy, depth: sz };
   const m = new THREE.Mesh(geo, material);
   m.position.set(x, y, z);
@@ -37,7 +123,6 @@ export function boxMesh(sx, sy, sz, material, x = 0, y = 0, z = 0) {
   return m;
 }
 
-// Elipsoide orgânico com deformação suave.
 export function sculptedEllipsoid(sx, sy, sz, material, x = 0, y = 0, z = 0, deformFn = null, segU = 18, segV = 14) {
   const geo = new THREE.SphereGeometry(0.5, segU, segV);
   const pos = geo.attributes.position;
@@ -52,6 +137,7 @@ export function sculptedEllipsoid(sx, sy, sz, material, x = 0, y = 0, z = 0, def
     pos.setXYZ(i, vx, vy, vz);
   }
   geo.computeVertexNormals();
+  withWhiteVertexColors(geo);
   geo.parameters = { width: sx, height: sy, depth: sz };
   const m = new THREE.Mesh(geo, material);
   m.position.set(x, y, z);
@@ -59,29 +145,24 @@ export function sculptedEllipsoid(sx, sy, sz, material, x = 0, y = 0, z = 0, def
   return m;
 }
 
-// Super-cápsula anatômica contínua sem costura de tampa (malha única de polo a polo com corpo cilíndrico e pontas arredondadas).
 export function sculptedCapsule(rxTop, rxBot, sy, rzTop, rzBot, material, x = 0, y = 0, z = 0, profileFn = null, segR = 22, segY = 18, roundness = 0.28) {
   const geo = new THREE.SphereGeometry(0.5, segR, segY);
   const pos = geo.attributes.position;
   for (let i = 0; i < pos.count; i++) {
     const sx0 = pos.getX(i) * 2;
-    const sy0 = pos.getY(i) * 2; // cos(phi): -1 .. +1
+    const sy0 = pos.getY(i) * 2;
     const sz0 = pos.getZ(i) * 2;
-    const rHoriz = Math.hypot(sx0, sz0); // sin(phi): 0 nos polos, 1 no equador
+    const rHoriz = Math.hypot(sx0, sz0);
     const px = rHoriz > 1e-5 ? sx0 / rHoriz : 0;
     const pz = rHoriz > 1e-5 ? sz0 / rHoriz : 0;
-
-    // Super-elipsoide suave: mantém raio cheio ao longo do cilindro e curva suavemente nos polos sem quina!
-    const ny = Math.sign(sy0) * Math.pow(Math.abs(sy0), 0.62); // -1 .. +1
-    const u = (ny + 1) * 0.5; // 0 (base) .. 1 (topo)
+    const ny = Math.sign(sy0) * Math.pow(Math.abs(sy0), 0.62);
+    const u = (ny + 1) * 0.5;
     const cap = Math.pow(Math.max(0, rHoriz), roundness);
-
     const rx = (rxBot + (rxTop - rxBot) * u) * cap;
     const rz = (rzBot + (rzTop - rzBot) * u) * cap;
     let vx = px * rx;
     let vy = ny * (sy * 0.5);
     let vz = pz * rz;
-
     if (profileFn) {
       const r = profileFn(u, vx, vy, vz, px, pz, cap);
       vx = r[0]; vy = r[1]; vz = r[2];
@@ -89,6 +170,7 @@ export function sculptedCapsule(rxTop, rxBot, sy, rzTop, rzBot, material, x = 0,
     pos.setXYZ(i, vx, vy, vz);
   }
   geo.computeVertexNormals();
+  withWhiteVertexColors(geo);
   const maxW = Math.max(rxTop, rxBot) * 2;
   const maxD = Math.max(rzTop, rzBot) * 2;
   geo.parameters = { width: maxW, height: sy, depth: maxD };
@@ -98,16 +180,15 @@ export function sculptedCapsule(rxTop, rxBot, sy, rzTop, rzBot, material, x = 0,
   return m;
 }
 
-// Placa de armadura chanfrada e curvada (Blindado / Couraça).
 function sculptedArmorPlate(sx, sy, sz, material, x = 0, y = 0, z = 0, curveZ = 0.12) {
   return sculptedCapsule(sx * 0.48, sx * 0.5, sy, sz * 0.48, sz * 0.5, material, x, y, z, (u, vx, vy, vz) => {
     const nx = vx / (sx * 0.5 || 1);
     const bend = -nx * nx * curveZ;
     return [vx, vy, vz + bend];
-  }, 16, 12, 0.22);
+  }, 16, 12, 0.20);
 }
 
-// ================= JOGADOR (MALHAS 3D REAIS DO RAoT) =================
+// ================= JOGADOR (MALHAS 3D DO RAoT + SOMBREAMENTO PBR ESTILIZADO) =================
 export const SKINS = {
   vanguarda: { name: 'Eren (Vanguarda)', char: 'eren', jacket: '#7a5434', pants: '#e4ddcd', cape: '#284632', hair: '#3b261c', boots: '#3a261a', trim: '#d8cfc0' },
   batedor:   { name: 'Erwin (Batedor)',  char: 'erwin', jacket: '#7a5434', pants: '#e4ddcd', cape: '#24402d', hair: '#c59b47', boots: '#3a261a', trim: '#d8cfc0' },
@@ -125,27 +206,24 @@ export function buildPlayerModel(skinKey = 'vanguarda') {
   root.scale.setScalar(0.98);
   g.add(root);
 
-  // Quadril + Equipamento ODM 3D real do RAoT
   const hips = new THREE.Group();
   hips.position.set(0, 0.01, 0);
   root.add(hips);
   hips.add(raotMesh('hips'));
-  hips.add(raotMesh('odm_gear', 0, -0.02, -0.02));
+  const odmGear = raotMesh('odm_gear', 0, -0.02, -0.02);
+  hips.add(odmGear);
 
-  // Tronco (Jaqueta da Tropa de Exploração com Asas da Liberdade + Camisa/Cachecol/Gravata do personagem do RAoT)
   const torso = new THREE.Group();
   torso.position.set(0, 0.10, 0.009);
   hips.add(torso);
   torso.add(raotMesh('jacket'));
   torso.add(raotMesh(`shirt_${ch}`));
 
-  // Cabeça + Cabelo esculpido do personagem do RAoT
   const head = new THREE.Group();
   head.position.set(0, 0.46, -0.044);
   torso.add(head);
   head.add(raotMesh(`head_${ch}`));
 
-  // Braços e Antebraços articulados do RAoT
   const armL = new THREE.Group();
   armL.position.set(0.115, 0.335, -0.050);
   torso.add(armL);
@@ -166,22 +244,32 @@ export function buildPlayerModel(skinKey = 'vanguarda') {
   armR.add(foreR);
   foreR.add(raotMesh('foreR'));
 
-  // 1. Cabos de espada e lâminas (geo_3dmg_handle + geo_3dmg_blade_perfect do RAoT)
+  // 1. Lâminas ODM com aço polido + marcadores de base/ponta para trilha de corte
   const bladeL = new THREE.Group();
   bladeL.position.set(0, -0.22, 0.01);
   foreL.add(bladeL);
   bladeL.add(raotMesh('sword_handle'));
-  const bLm = raotMesh('sword_blade', 0, 0, 0, '#1c2228');
+  const bLm = raotMesh('sword_blade', 0, 0, 0, true);
   bladeL.add(bLm);
+  const baseL = new THREE.Object3D();
+  baseL.position.set(0, 0, 0.14);
+  const tipL = new THREE.Object3D();
+  tipL.position.set(0, 0, 0.96);
+  bladeL.add(baseL, tipL);
 
   const bladeR = new THREE.Group();
   bladeR.position.set(0, -0.22, 0.01);
   foreR.add(bladeR);
   bladeR.add(raotMesh('sword_handle'));
-  const bRm = raotMesh('sword_blade', 0, 0, 0, '#1c2228');
+  const bRm = raotMesh('sword_blade', 0, 0, 0, true);
   bladeR.add(bRm);
+  const baseR = new THREE.Object3D();
+  baseR.position.set(0, 0, 0.14);
+  const tipR = new THREE.Object3D();
+  tipR.position.set(0, 0, 0.96);
+  bladeR.add(baseR, tipR);
 
-  // 2. Pistolas APG (apg_gun_handle + apg_gun_cannister do RAoT)
+  // 2. Pistolas APG
   const apgL = new THREE.Group();
   apgL.position.set(0, -0.22, 0.01);
   apgL.visible = false;
@@ -194,7 +282,7 @@ export function buildPlayerModel(skinKey = 'vanguarda') {
   foreR.add(apgR);
   apgR.add(raotMesh('apg_gun'));
 
-  // 3. Lanças do Trovão (geo_ts_spear do RAoT)
+  // 3. Lanças do Trovão
   const spearL = new THREE.Group();
   spearL.position.set(0.06, -0.13, 0.02);
   spearL.visible = false;
@@ -207,7 +295,7 @@ export function buildPlayerModel(skinKey = 'vanguarda') {
   foreR.add(spearR);
   spearR.add(raotMesh('thunder_spear'));
 
-  // Pernas e Botas articuladas do RAoT
+  // Pernas e Botas
   const legL = new THREE.Group();
   legL.position.set(0.076, 0.003, -0.004);
   hips.add(legL);
@@ -228,58 +316,82 @@ export function buildPlayerModel(skinKey = 'vanguarda') {
   legR.add(shinR);
   shinR.add(raotMesh('shinR'));
 
-  // Pontos de origem dos ganchos e do bocal de gás no equipamento ODM do RAoT
+  const footL = new THREE.Object3D(); footL.position.set(0, -0.46, 0.04); shinL.add(footL);
+  const footR = new THREE.Object3D(); footR.position.set(0, -0.46, 0.04); shinR.add(footR);
+
   const launcherL = new THREE.Object3D(); launcherL.position.set(0.21, 0.04, -0.06); hips.add(launcherL);
   const launcherR = new THREE.Object3D(); launcherR.position.set(-0.21, 0.04, -0.06); hips.add(launcherR);
   const nozzle = new THREE.Object3D(); nozzle.position.set(0, 0.02, -0.24); hips.add(nozzle);
 
-  // No RAoT os personagens usam a jaqueta curta da Tropa de Exploração com as Asas da Liberdade diretamente nas costas
   const cape = new THREE.Group();
   cape.position.set(0, 0.36, -0.09);
   torso.add(cape);
   const cape2p = new THREE.Group();
   cape.add(cape2p);
 
-  g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
   return {
-    group: g, root, hips, torso, head, cape, cape2: cape2p,
+    group: g, root, hips, torso, head, cape, cape2: cape2p, odmGear,
     armL, armR, foreL, foreR,
-    legL, legR, shinL, shinR,
-    bladeL, bladeR, bladeMeshes: [bLm, bRm], apgL, apgR, spearL, spearR, launcherL, launcherR, nozzle,
+    legL, legR, shinL, shinR, footL, footR,
+    bladeL, bladeR, bladeMeshes: [bLm, bRm], bladeBases: [baseL, baseR], bladeTips: [tipL, tipR],
+    apgL, apgR, spearL, spearR, launcherL, launcherR, nozzle,
   };
 }
 
-// ================= GIGANTES / TITÃS (MALHA ANATÔMICA CONTÍNUA) =================
-const SKIN_TONES = ['#e0a890', '#d4967c', '#c98c72', '#b97a5f', '#e8b9a0', '#a86b52', '#d9a48a', '#c4826a', '#edc2a8'];
-const HAIR = ['#241811', '#422a1b', '#634324', '#161618', '#7d5f42', '#33241d', '#8c3b2b'];
-const IRIS_COLORS = ['#6b8e78', '#8a6f48', '#52738c', '#7a4a3a', '#948868'];
+// ================= GIGANTES / TITÃS (ESCULPIDOS NO BLENDER 5.2 + RIG DE COMBATE) =================
+const SKIN_TONES = ['#dfa890', '#d6997f', '#cc8e74', '#be7f65', '#e7baa2', '#b3745b', '#dca68c', '#c8866e', '#ecc4aa'];
+const HAIR = ['#1f1510', '#3d2618', '#5e3f22', '#141418', '#75583c', '#2e2019', '#7d3426'];
+const IRIS_COLORS = ['#6f967d', '#96784c', '#587c96', '#824f3e', '#9e916d', '#7da09c'];
 
-// Construído para 10m de altura e escalado. Gigante olha para +Z.
+function blenderOrFallback(name, material, fallbackFn, mirrorX = false) {
+  const bGeo = getBlenderGeo(name);
+  if (bGeo) {
+    const geo = mirrorX ? mirrorXGeo(bGeo) : bGeo;
+    const m = new THREE.Mesh(geo, material);
+    m.castShadow = true;
+    return m;
+  }
+  return fallbackFn();
+}
+
 export function buildGiantModel(opts = {}) {
   const isColossus = !!opts.boss;
   const isArmored = !!opts.armored;
   const isDummy = !!opts.dummy;
 
-  const baseTone = isColossus ? '#9e342c' : (isArmored ? '#8c3830' : (opts.skin || pick(SKIN_TONES)));
+  const baseTone = isColossus ? '#a6362c' : (isArmored ? '#963b32' : (opts.skin || pick(SKIN_TONES)));
   const skinC = new THREE.Color(baseTone);
-  const skin = new THREE.MeshLambertMaterial({ color: skinC });
-  const skinDark = new THREE.MeshLambertMaterial({
-    color: skinC.clone().multiplyScalar(isColossus ? 0.72 : 0.8),
+  const skin = new THREE.MeshStandardMaterial({
+    color: skinC,
+    vertexColors: true,
+    roughness: isColossus ? 0.56 : 0.68,
+    metalness: 0.02,
   });
-  const muscleSinew = new THREE.MeshLambertMaterial({
-    color: isColossus || isArmored ? '#d8bfb0' : skinC.clone().multiplyScalar(0.88),
+  const skinDark = new THREE.MeshStandardMaterial({
+    color: skinC.clone().multiplyScalar(isColossus ? 0.72 : 0.80),
+    vertexColors: true,
+    roughness: 0.72,
+    metalness: 0.02,
   });
-  const napeMat = new THREE.MeshLambertMaterial({
-    color: skinC.clone().multiplyScalar(0.75).lerp(new THREE.Color('#b03a3a'), 0.22),
+  const muscleSinew = new THREE.MeshStandardMaterial({
+    color: isColossus || isArmored ? '#dfd0c2' : skinC.clone().multiplyScalar(0.88),
+    vertexColors: true,
+    roughness: 0.55,
+  });
+  const napeMat = new THREE.MeshStandardMaterial({
+    color: skinC.clone().multiplyScalar(0.84).lerp(new THREE.Color('#b83c3c'), 0.18),
+    vertexColors: true,
+    roughness: 0.68,
   });
 
-  const fat = opts.fat ?? rand(0.9, 1.25);
-  const headS = opts.headScale ?? rand(0.92, 1.2);
-  const armLen = opts.armLen ?? rand(0.94, 1.14);
-  const legLen = opts.legLen ?? rand(0.92, 1.08);
+  const fat = opts.fat ?? rand(0.92, 1.22);
+  const headS = opts.headScale ?? rand(0.94, 1.16);
+  const armLen = opts.armLen ?? rand(0.94, 1.12);
+  const legLen = opts.legLen ?? rand(0.94, 1.08);
 
   const root = new THREE.Group();
-  const hipH = 4.85 * legLen;
+  const hipH = 4.82 * legLen;
   const body = new THREE.Group();
   body.position.y = hipH;
   root.add(body);
@@ -291,308 +403,236 @@ export function buildGiantModel(opts = {}) {
     return m;
   };
 
-  // 1. Pelve / Quadril contínuo
-  add(body, sculptedCapsule(1.26 * fat, 1.20 * fat, 1.45, 0.84 * fat, 0.80 * fat, skin, 0, 0.14, 0, (u, vx, vy, vz, px, pz) => {
-    const glute = pz < -0.2 ? -0.12 * Math.sin(u * Math.PI) : 0;
-    return [vx, vy, vz + glute];
-  }, 22, 16, 0.26));
+  // 1. Pelve anatômica esculpida no Blender (transição contínua com oblíquos e coxas)
+  const fatW = 0.96 + (fat - 1) * 0.42;
+  const pelvis = blenderOrFallback('titan_pelvis', skin, () =>
+    sculptedCapsule(1.06 * fatW, 0.98 * fatW, 1.32, 0.74 * fatW, 0.70 * fatW, skin, 0, 0.24, 0)
+  );
+  pelvis.position.y = 0.28;
+  pelvis.scale.set(0.84 * fatW, 0.90, 0.86 * fatW);
+  add(body, pelvis);
 
-  // 2. Tronco Único Contínuo (Cintura -> Abdômen -> Costelas -> Peitorais -> Ombros/Trapézio sem bolhas soltas!)
+  // 2. Tronco muscular esculpido no Blender (peitorais, abdômen, costelas, dorsais e sulco vertebral)
   const spine = new THREE.Group();
-  spine.position.y = 0.6;
+  spine.position.y = 0.44;
   body.add(spine);
 
-  add(spine, sculptedCapsule(1.58, 1.24 * fat, 3.75, 0.90, 0.82 * fat, skin, 0, 1.68, 0.02, (u, vx, vy, vz, px, pz, cap) => {
-    // u vai de 0 (quadril/cintura) até 1 (ombros/base do pescoço)
-    // Curva de largura (cintura estreita em u=0.25, dorsais largos em u=0.78, trapézio fechando em u=1.0)
-    let wScale = 1.0;
-    if (u < 0.35) {
-      wScale = 1.0 - Math.sin((u / 0.35) * Math.PI) * 0.09;
-    } else if (u < 0.86) {
-      wScale = 1.0 + Math.sin(((u - 0.35) / 0.51) * Math.PI * 0.65) * 0.16;
-    } else {
-      const t = (u - 0.86) / 0.14;
-      wScale = 1.14 * (1.0 - t * 0.42);
-    }
+  const torsoMesh = blenderOrFallback('titan_torso', skin, () =>
+    sculptedCapsule(1.58, 1.24 * fatW, 3.75, 0.90, 0.82 * fatW, skin, 0, 1.68, 0.02)
+  );
+  torsoMesh.scale.set(1.06 * fatW, 1.04, 1.02 * fatW);
+  add(spine, torsoMesh);
 
-    // Relevo anatômico frontal (+Z): barriga suave embaixo e peitorais esculpidos na própria malha em cima
-    let zAdd = 0;
-    if (pz > 0.15) {
-      // Barriga (u = 0.08 .. 0.48)
-      if (u > 0.06 && u < 0.52) {
-        const bu = (u - 0.06) / 0.46;
-        const belly = Math.sin(bu * Math.PI) * (fat > 1.08 ? 0.32 * (fat - 0.7) : 0.10);
-        // Sulco central da linha alba e gomos abdominais sutis na própria malha
-        const lineaAlba = Math.abs(px) < 0.25 ? -0.04 * (1 - Math.abs(px) / 0.25) : 0;
-        const absRipple = fat <= 1.12 ? Math.sin(bu * Math.PI * 3) * 0.025 : 0;
-        zAdd += (belly + lineaAlba + absRipple) * pz * cap;
-      }
-      // Peitoral esculpido direto na malha (u = 0.54 .. 0.86), com sulco do esterno no centro
-      if (u > 0.52 && u < 0.88) {
-        const pu = (u - 0.52) / 0.36;
-        const sternum = Math.min(1, Math.abs(px) / 0.22);
-        const pec = Math.sin(pu * Math.PI) * sternum * 0.22;
-        // Vinco inferior do peitoral em pu ~ 0.15
-        const underCut = pu < 0.22 ? -Math.sin((pu / 0.22) * Math.PI) * 0.06 * sternum : 0;
-        zAdd += (pec + underCut) * pz * cap;
-      }
-    } else if (pz < -0.2) {
-      // Sulco da coluna vertebral nas costas (-Z)
-      const spineGroove = Math.abs(px) < 0.22 ? 0.06 * (1 - Math.abs(px) / 0.22) : 0;
-      zAdd += spineGroove * cap;
-    }
+  // Trapézio muscular conectando ombros, clavículas e base do pescoço
+  add(spine, sculptedCapsule(0.50, 1.12 * fatW, 0.90, 0.44, 0.74 * fatW, skin, 0, 3.24, -0.02, null, 18, 12, 0.28));
 
-    return [vx * wScale, vy, vz + zAdd];
-  }, 26, 22, 0.25));
-
-  // Costelas aparentes no Colosso
   if (isColossus) {
-    for (let r = 0; r < 4; r++) {
+    for (let r = 0; r < 5; r++) {
       for (const s of [-1, 1]) {
-        const rib = sculptedCapsule(0.08, 0.08, 0.85, 0.12, 0.12, muscleSinew, s * 0.68, 1.55 + r * 0.30, 0.74);
-        rib.rotation.z = Math.PI * 0.5 + s * 0.16;
+        const rib = sculptedCapsule(0.075, 0.075, 0.92, 0.11, 0.11, muscleSinew, s * 0.68, 1.42 + r * 0.28, 0.76);
+        rib.rotation.z = Math.PI * 0.5 + s * 0.15;
         add(spine, rib);
       }
     }
+    // Tendões peitorais e claviculares aparentes no Colosso
+    for (const s of [-1, 1]) {
+      const clav = sculptedCapsule(0.09, 0.08, 1.25, 0.11, 0.10, muscleSinew, s * 0.72, 3.12, 0.58);
+      clav.rotation.z = Math.PI * 0.5 - s * 0.14;
+      add(spine, clav);
+    }
   }
 
-  // 3. Pescoço Muscular Cilíndrico e Ponto Fraco da Nuca (zone = 'nape')
+  // 3. Pescoço muscular e Ponto Fraco da Nuca (zone = 'nape')
   const neck = new THREE.Group();
-  neck.position.y = 3.45;
+  neck.position.y = 3.30;
   spine.add(neck);
-  add(neck, sculptedCapsule(0.48, 0.58, 1.05, 0.46, 0.56, skin, 0, 0.24, 0.02, null, 18, 12, 0.24));
+  add(neck, sculptedCapsule(0.52, 0.66, 0.92, 0.48, 0.60, skin, 0, 0.18, 0.02, null, 18, 12, 0.26));
 
-  // Nuca integrada ao contorno posterior do pescoço
-  const nape = add(neck, sculptedCapsule(0.44, 0.48, 0.82, 0.22, 0.24, napeMat, 0, 0.34, -0.42, null, 16, 10, 0.28), 'nape');
+  const nape = add(neck, sculptedCapsule(0.46, 0.50, 0.86, 0.24, 0.26, napeMat, 0, 0.30, -0.44, null, 16, 10, 0.28), 'nape');
 
-  // Se for Boneco de Treino (dummy), adiciona o alvo acolchoado autêntico do RAoT (strike_pad_full) na nuca
   if (isDummy) {
-    const padGeo = getRaotGeo('strike_pad').clone();
+    const padGeo = withWhiteVertexColors(getRaotGeo('strike_pad').clone());
     padGeo.parameters = { width: 1.0, height: 1.0, depth: 0.45 };
-    const padMesh = new THREE.Mesh(padGeo, getRaotMat());
-    padMesh.position.set(0, 0.35, -0.58);
+    const padMesh = new THREE.Mesh(padGeo, getRaotClothMat());
+    padMesh.position.set(0, 0.32, -0.58);
     padMesh.castShadow = true;
     add(neck, padMesh, 'nape');
   }
 
-  // 4. Cabeça e Rosto Anatômico de Titã (Crânio, Maçãs do Rosto, Maxilar Quadrado, Olhos Fundos e Dentes Alinhados)
+  // 4. Cabeça craniofacial esculpida no Blender + Arcada dentária recuada interna
   const head = new THREE.Group();
-  head.position.y = 0.6;
+  head.position.y = 0.40;
   head.scale.setScalar(headS);
   neck.add(head);
 
-  // Malha craniofacial única (queixo em u=0 até topo do crânio em u=1)
-  add(head, sculptedCapsule(0.95, 0.76, 2.06, 0.96, 0.82, skin, 0, 1.02, 0.06, (u, vx, vy, vz, px, pz, cap) => {
-    // Formato de rosto humano/Titã: mandíbula marcada em u=0.15, maçãs do rosto largas em u=0.52, têmporas em u=0.72
-    let wMul = 1.0;
-    if (u < 0.22) wMul = 0.84 + (u / 0.22) * 0.14;
-    else if (u < 0.58) wMul = 0.98 + Math.sin(((u - 0.22) / 0.36) * Math.PI) * 0.08;
+  const headMesh = blenderOrFallback('titan_head', skin, () =>
+    sculptedCapsule(0.95, 0.76, 2.06, 0.96, 0.82, skin, 0, 1.02, 0.06)
+  );
+  add(head, headMesh);
 
-    let zOff = 0;
-    if (pz > 0.2) {
-      // Queixo firme na base frontal
-      if (u < 0.20 && Math.abs(px) < 0.45) zOff += 0.08 * cap;
-      // Cavidade da boca levemente recuada para os dentes ficarem dentro do rosto
-      if (u > 0.16 && u < 0.34 && Math.abs(px) < 0.58) zOff -= 0.08;
-      // Cavidade ocular profunda abaixo da sobrancelha (u = 0.52 .. 0.68)
-      if (u > 0.52 && u < 0.68 && Math.abs(px) > 0.18 && Math.abs(px) < 0.72) zOff -= 0.14;
-      // Arco superciliar (sobrancelha óssea proeminente em u = 0.68 .. 0.76)
-      if (u >= 0.66 && u < 0.77 && Math.abs(px) < 0.75) zOff += 0.09 * cap;
-    }
-    return [vx * wMul, vy, vz + zOff];
-  }, 26, 20, 0.36));
+  const teethMat = new THREE.MeshStandardMaterial({
+    color: '#f2ead8',
+    vertexColors: true,
+    roughness: 0.36,
+    metalness: 0.04,
+  });
+  const teethMesh = blenderOrFallback('titan_teeth', teethMat, () =>
+    sculptedCapsule(0.44, 0.44, 0.20, 0.08, 0.08, teethMat, 0, 0.46, 0.72)
+  );
+  add(head, teethMesh);
 
-  // Olhos fundos e ameaçadores sob o arco superciliar (zone = 'eyes')
-  const eyeW = mat('#f0ece1');
-  const irisM = mat(isColossus ? '#e8c870' : pick(IRIS_COLORS));
-  const pupil = mat('#120e0e');
-  const socketM = mat('#261412');
-  const eyeSize = rand(0.25, 0.32);
+  // Olhos fundos sob o arco superciliar esculpido (zone = 'eyes')
+  const eyeW = mat('#ede7da', { roughness: 0.32 });
+  const irisM = mat(isColossus || isArmored ? '#f5c858' : pick(IRIS_COLORS), {
+    roughness: 0.25,
+    emissive: isColossus || isArmored ? '#7a5010' : '#000000',
+  });
+  const pupil = mat('#0d0a0a', { roughness: 0.2 });
+  const socketM = mat('#1e0e0d', { roughness: 0.9 });
+  const eyeSize = rand(0.22, 0.27);
   const eyes = new THREE.Group();
-  eyes.position.set(0, 1.24, 0.80);
+  eyes.position.set(0, 1.24, 0.72);
   head.add(eyes);
 
   for (const s of [-1, 1]) {
-    // Sombra orbital profunda (width >= 0.38 para lungeTarget)
-    add(eyes, sculptedEllipsoid(0.42, 0.28, 0.16, socketM, s * 0.42, 0, -0.02), 'eyes');
-    // Esclera recuada dentro da órbita
-    add(eyes, sculptedEllipsoid(eyeSize * 1.15, eyeSize * 0.82, 0.16, eyeW, s * 0.42, 0, 0.03), 'eyes');
-    // Íris e pupila pequenas (olhar fixo de Titã)
-    const gx = s * 0.42 + rand(-0.02, 0.02);
-    const gy = rand(-0.015, 0.015);
-    add(eyes, sculptedEllipsoid(eyeSize * 0.46, eyeSize * 0.46, 0.12, irisM, gx, gy, 0.08), 'eyes');
-    add(eyes, sculptedEllipsoid(eyeSize * 0.24, eyeSize * 0.24, 0.13, pupil, gx, gy, 0.095), 'eyes');
-    // Pálpebra/cenho franzido da cor da pele escura
-    const brow = sculptedCapsule(0.06, 0.05, 0.48, 0.09, 0.08, skinDark, s * 0.42, eyeSize * 0.52, 0.06);
-    brow.rotation.z = Math.PI * 0.5 - s * 0.14;
-    add(eyes, brow, 'eyes');
+    // Sombra orbital (width >= 0.38 para lungeTarget)
+    add(eyes, sculptedEllipsoid(0.40, 0.25, 0.14, socketM, s * 0.42, 0, -0.02), 'eyes');
+    add(eyes, sculptedEllipsoid(eyeSize * 1.12, eyeSize * 0.78, 0.14, eyeW, s * 0.42, 0, 0.03), 'eyes');
+    const gx = s * 0.42 + rand(-0.015, 0.015);
+    const gy = rand(-0.01, 0.01);
+    add(eyes, sculptedEllipsoid(eyeSize * 0.45, eyeSize * 0.45, 0.11, irisM, gx, gy, 0.075), 'eyes');
+    add(eyes, sculptedEllipsoid(eyeSize * 0.22, eyeSize * 0.22, 0.12, pupil, gx, gy, 0.09), 'eyes');
   }
 
-  // Nariz proporcional integrado ao rosto (ponte nasal + base das narinas)
-  const nose = sculptedCapsule(0.08, 0.15, 0.48, 0.10, 0.20, skinDark, 0, 0.96, 0.90);
-  nose.rotation.x = -0.18;
-  add(head, nose);
-
-  // Boca e Dentes integrados ao maxilar (sem lábios vermelhos saltados!)
-  const mouthM = mat('#220c0e');
-  const teethM = mat('#ebe2cc');
-  const grin = rand(0.95, 1.32);
-
-  // Fundo escuro da boca recuado na face
-  add(head, sculptedCapsule(grin * 0.48, grin * 0.46, 0.28, 0.06, 0.06, mouthM, 0, 0.46, 0.75, null, 14, 8, 0.22));
-
-  // Dentes incisivos/molares achatados acompanhando a curvatura da mandíbula
-  const nT = Math.round(grin * 8);
-  for (let i = 0; i < nT; i++) {
-    const u = (i + 0.5) / nT - 0.5; // -0.5 .. +0.5
-    const tx = u * grin * 0.88;
-    const tz = 0.84 - u * u * 0.34;
-    const tw = (grin / nT) * 0.44;
-    add(head, sculptedCapsule(tw, tw * 0.95, 0.11, 0.045, 0.045, teethM, tx, 0.53, tz, null, 10, 6, 0.20));
-    add(head, sculptedCapsule(tw * 0.95, tw * 0.9, 0.10, 0.045, 0.045, teethM, tx, 0.39, tz, null, 10, 6, 0.20));
-  }
-
-  // Contorno labial discreto da cor da pele sombreada
-  for (const [ly, arch] of [[0.60, -0.28], [0.32, -0.28]]) {
-    add(head, sculptedEllipsoid(grin * 0.96, 0.08, 0.16, skinDark, 0, ly, 0.86, (vx, vy, vz) => [vx, vy, vz + vx * vx * arch]));
-  }
-
-  // Orelhas rentes ao crânio
-  for (const s of [-1, 1]) {
-    const ear = sculptedEllipsoid(0.18, 0.48, 0.32, skinDark, s * 0.92, 1.02, 0.02);
-    ear.rotation.y = s * 0.18;
-    add(head, ear);
-  }
-
-  // Cabelo modelado como touca anatômica contínua sobre o crânio (sem salsichas flutuantes)
-  if (!isColossus && opts.hair !== false && (isArmored || Math.random() < 0.82)) {
-    const hm = isArmored ? mat('#d8cfb8') : mat(pick(HAIR));
-    const style = isArmored ? 2 : Math.floor(rand(0, 3));
-    // Calota craniana superior e nuca de cabelo
-    add(head, sculptedEllipsoid(2.02, 1.15, 2.02, hm, 0, 1.58, -0.04, (vx, vy, vz) => {
-      // Recorta a frente para deixar a testa e os olhos livres
-      if (vz > 0.35 && vy < 0.12) return [vx * 0.95, vy + 0.18, vz * 0.82];
+  // Cabelo estilizado de Titã (variedade de cortes inspirados no anime)
+  if (!isColossus && opts.hair !== false && (isArmored || Math.random() < 0.85)) {
+    const hm = isArmored
+      ? mat('#ddd4be', { roughness: 0.75 })
+      : mat(pick(HAIR), { roughness: 0.78 });
+    const style = isArmored ? 2 : Math.floor(rand(0, 4));
+    add(head, sculptedEllipsoid(2.00, 1.14, 2.02, hm, 0, 1.58, -0.05, (vx, vy, vz) => {
+      if (vz > 0.32 && vy < 0.14) return [vx * 0.94, vy + 0.20, vz * 0.80];
       return [vx, vy, vz];
-    }, 20, 16));
+    }, 22, 16));
     if (style >= 1) {
-      // Cabelo mais comprido na nuca e têmporas
-      add(head, sculptedCapsule(0.92, 0.82, 1.15, 0.55, 0.45, hm, 0, 1.05, -0.48, null, 16, 10, 0.28));
+      add(head, sculptedCapsule(0.92, 0.80, 1.18, 0.56, 0.44, hm, 0, 1.02, -0.50, null, 16, 10, 0.28));
     }
-    if (style === 2) {
+    if (style >= 2) {
       for (const s of [-1, 1]) {
-        const sideLock = sculptedCapsule(0.16, 0.08, 0.95, 0.36, 0.22, hm, s * 0.88, 1.18, 0.18);
-        sideLock.rotation.z = -s * 0.12;
+        const sideLock = sculptedCapsule(0.17, 0.07, 0.98, 0.38, 0.22, hm, s * 0.89, 1.16, 0.18);
+        sideLock.rotation.z = -s * 0.13;
         add(head, sideLock);
+      }
+    }
+    if (style === 3) {
+      // Franja irregular caindo na testa
+      for (let b = -2; b <= 2; b++) {
+        const bang = sculptedCapsule(0.12, 0.04, 0.58, 0.12, 0.06, hm, b * 0.24, 1.62, 0.82);
+        bang.rotation.x = 0.32;
+        bang.rotation.z = b * -0.08;
+        add(head, bang);
       }
     }
   }
 
-  // 5. Braços Anatômicos Contínuos (Ombro -> Bíceps -> Antebraço -> Mão sem bolas nas juntas!)
+  // 5. Braços e Mãos esculpidos no Blender
   const arms = {};
   for (const [side, s] of [['L', 1], ['R', -1]]) {
+    const mirror = side === 'R';
     const sh = new THREE.Group();
-    sh.position.set(s * 1.58, 3.22, 0);
+    sh.position.set(s * 1.40 * fatW, 3.12, 0);
     spine.add(sh);
 
-    // Braço superior contínuo desde o deltóide (+0.12) até o cotovelo (-2.4 * armLen - 0.10)
     const uLen = 2.4 * armLen;
-    add(sh, sculptedCapsule(0.54, 0.40, uLen + 0.28, 0.54, 0.40, skin, 0, -uLen * 0.5 + 0.02, 0, (u, vx, vy, vz, px, pz) => {
-      // Volume do deltóide no topo (u > 0.7) e bíceps no meio (u ~ 0.45)
-      const bicep = Math.sin(u * Math.PI) * 0.08;
-      const delt = u > 0.65 && s * px > 0 ? Math.sin(((u - 0.65) / 0.35) * Math.PI) * 0.10 * s : 0;
-      return [vx * (1 + bicep) + delt, vy, vz * (1 + bicep)];
-    }, 18, 14, 0.26), 'arm' + side);
+    const uArm = blenderOrFallback('titan_upper_arm', skin, () =>
+      sculptedCapsule(0.54, 0.40, 2.56, 0.54, 0.40, skin, 0, -1.14, 0), mirror
+    );
+    uArm.scale.set(1, armLen, 1);
+    add(sh, uArm, 'arm' + side);
 
     const elbow = new THREE.Group();
     elbow.position.y = -uLen;
     sh.add(elbow);
 
-    // Antebraço contínuo encaixando dentro do cotovelo sem bola intermediária
     const fLen = 2.2 * armLen;
-    add(elbow, sculptedCapsule(0.42, 0.29, fLen + 0.24, 0.41, 0.27, skin, 0, -fLen * 0.5 + 0.04, 0, (u, vx, vy, vz) => {
-      const swell = u > 0.45 ? Math.sin(((u - 0.45) / 0.55) * Math.PI) * 0.06 : 0;
-      return [vx * (1 + swell), vy, vz * (1 + swell)];
-    }, 18, 12, 0.26), 'arm' + side);
+    const fArm = blenderOrFallback('titan_forearm', skin, () =>
+      sculptedCapsule(0.42, 0.29, 2.32, 0.41, 0.27, skin, 0, -1.06, 0), mirror
+    );
+    fArm.scale.set(1, armLen, 1);
+    add(elbow, fArm, 'arm' + side);
 
     const hand = new THREE.Group();
     hand.position.y = -fLen;
     elbow.add(hand);
 
-    // Palma da mão achatada e dedos cilíndricos
-    add(hand, sculptedCapsule(0.36, 0.38, 0.72, 0.20, 0.18, skinDark, 0, -0.32, 0.02, null, 14, 8, 0.28), 'arm' + side);
-    for (let f = 0; f < 4; f++) {
-      const fx = (-0.24 + f * 0.16) * s;
-      const finger = sculptedCapsule(0.075, 0.055, 0.52, 0.075, 0.055, skin, fx, -0.82, 0.06, null, 10, 6, 0.28);
-      finger.rotation.x = 0.18;
-      add(hand, finger, 'arm' + side);
-    }
-    const thumb = sculptedCapsule(0.085, 0.065, 0.42, 0.085, 0.065, skin, -s * 0.34, -0.48, 0.14, null, 10, 6, 0.28);
-    thumb.rotation.z = s * 0.48;
-    thumb.rotation.x = 0.25;
-    add(hand, thumb, 'arm' + side);
+    const handMesh = blenderOrFallback('titan_hand', skinDark, () =>
+      sculptedCapsule(0.36, 0.38, 0.92, 0.20, 0.18, skinDark, 0, -0.45, 0.02), mirror
+    );
+    add(hand, handMesh, 'arm' + side);
 
     arms[side] = { shoulder: sh, elbow, hand };
   }
 
-  // 6. Pernas Anatômicas Contínuas (Coxa -> Panturrilha -> Pé sem anéis esféricos nos joelhos!)
+  // 6. Pernas e Pés esculpidos no Blender
   const legs = {};
   for (const [side, s] of [['L', 1], ['R', -1]]) {
+    const mirror = side === 'R';
     const hip = new THREE.Group();
-    hip.position.set(s * 0.74 * fat, 0, 0);
+    hip.position.set(s * 0.64 * fatW, 0.08, 0);
     body.add(hip);
 
     const tLen = 2.4 * legLen;
-    add(hip, sculptedCapsule(0.72 * fat, 0.50, tLen + 0.30, 0.74 * fat, 0.52, skin, 0, -tLen * 0.5 + 0.04, 0, (u, vx, vy, vz, px, pz) => {
-      const quad = pz > 0 ? Math.sin(u * Math.PI) * 0.10 : 0;
-      return [vx, vy, vz + quad];
-    }, 18, 14, 0.26), 'leg' + side);
+    const thigh = blenderOrFallback('titan_thigh', skin, () =>
+      sculptedCapsule(0.72, 0.50, 2.58, 0.74, 0.52, skin, 0, -1.15, 0), mirror
+    );
+    thigh.scale.set(0.95 * fatW, legLen, 0.95 * fatW);
+    add(hip, thigh, 'leg' + side);
 
     const knee = new THREE.Group();
     knee.position.y = -tLen;
     hip.add(knee);
 
     const cLen = 2.2 * legLen;
-    add(knee, sculptedCapsule(0.51, 0.35, cLen + 0.26, 0.52, 0.37, skin, 0, -cLen * 0.5 + 0.04, 0, (u, vx, vy, vz, px, pz) => {
-      // Panturrilha alta atrás (-Z) e canela reta na frente (+Z)
-      const calf = pz < 0 && u > 0.35 ? Math.sin(((u - 0.35) / 0.65) * Math.PI) * 0.14 : 0;
-      return [vx, vy, vz - calf];
-    }, 18, 14, 0.26), 'leg' + side);
+    const calf = blenderOrFallback('titan_calf', skin, () =>
+      sculptedCapsule(0.51, 0.35, 2.32, 0.52, 0.37, skin, 0, -1.06, 0), mirror
+    );
+    calf.scale.set(1, legLen, 1);
+    add(knee, calf, 'leg' + side);
 
-    // Pé anatômico com sola plana
-    add(knee, sculptedEllipsoid(1.04, 0.52, 1.82, skinDark, 0, -cLen - 0.02, 0.30, (vx, vy, vz) => {
-      const flatSole = vy < -0.10 ? -0.16 : vy;
-      return [vx, flatSole, vz];
-    }), 'leg' + side);
+    const foot = blenderOrFallback('titan_foot', skinDark, () =>
+      sculptedEllipsoid(1.04, 0.52, 1.82, skinDark, 0, -0.10, 0.30), mirror
+    );
+    foot.position.y = -cLen;
+    add(knee, foot, 'leg' + side);
 
     legs[side] = { hip, knee };
   }
 
-  // 7. Couraça / Placas de Armadura Óssea Contornadas (Titã Blindado)
+  // 7. Couraça / Placas Ósseas Endurecidas (Titã Blindado)
   const armor = [];
   if (isArmored) {
-    const plate = new THREE.MeshLambertMaterial({ color: '#d6cfc0' });
-    const plateDark = new THREE.MeshLambertMaterial({ color: '#b5ad9c' });
-    // armor[0] é sempre a placa da nuca
-    armor.push(add(neck, sculptedArmorPlate(1.22, 1.05, 0.32, plate, 0, 0.34, -0.58, -0.08), 'nape'));
-    armor.push(add(spine, sculptedArmorPlate(1.48, 1.15, 0.32, plate, 0.70, 2.65, 0.86, 0.1)));
-    armor.push(add(spine, sculptedArmorPlate(1.48, 1.15, 0.32, plate, -0.70, 2.65, 0.86, 0.1)));
-    armor.push(add(spine, sculptedArmorPlate(2.70, 0.85, 0.28, plateDark, 0, 1.35, 0.80, 0.14)));
-    armor.push(add(spine, sculptedArmorPlate(3.05, 1.35, 0.30, plate, 0, 2.65, -0.84, -0.14)));
+    const plate = new THREE.MeshStandardMaterial({ color: '#dfd7c5', vertexColors: true, roughness: 0.42, metalness: 0.12 });
+    const plateDark = new THREE.MeshStandardMaterial({ color: '#beb5a2', vertexColors: true, roughness: 0.48, metalness: 0.10 });
+    armor.push(add(neck, sculptedArmorPlate(1.24, 1.06, 0.34, plate, 0, 0.34, -0.58, -0.08), 'nape'));
+    armor.push(add(spine, sculptedArmorPlate(1.50, 1.18, 0.34, plate, 0.70, 2.65, 0.88, 0.10)));
+    armor.push(add(spine, sculptedArmorPlate(1.50, 1.18, 0.34, plate, -0.70, 2.65, 0.88, 0.10)));
+    armor.push(add(spine, sculptedArmorPlate(2.72, 0.88, 0.30, plateDark, 0, 1.35, 0.82, 0.14)));
+    armor.push(add(spine, sculptedArmorPlate(3.08, 1.38, 0.32, plate, 0, 2.65, -0.86, -0.14)));
     for (const s of [-1, 1]) {
       const side = s > 0 ? 'L' : 'R';
-      armor.push(add(arms[side].shoulder, sculptedArmorPlate(1.18, 0.95, 1.18, plate, s * 0.08, -0.35, 0, 0.08)));
-      armor.push(add(arms[side].elbow, sculptedArmorPlate(0.88, 1.40, 0.88, plateDark, 0, -0.95, 0.10, 0.06)));
-      armor.push(add(legs[side].hip, sculptedArmorPlate(1.32, 1.50, 0.38, plate, 0, -1.1, 0.56, 0.1)));
-      armor.push(add(legs[side].knee, sculptedArmorPlate(1.14, 1.45, 0.34, plate, 0, -0.95, 0.50, 0.08)));
+      armor.push(add(arms[side].shoulder, sculptedArmorPlate(1.20, 0.98, 1.20, plate, s * 0.08, -0.35, 0, 0.08)));
+      armor.push(add(arms[side].elbow, sculptedArmorPlate(0.90, 1.42, 0.90, plateDark, 0, -0.95, 0.10, 0.06)));
+      armor.push(add(legs[side].hip, sculptedArmorPlate(1.34, 1.52, 0.40, plate, 0, -1.1, 0.58, 0.10)));
+      armor.push(add(legs[side].knee, sculptedArmorPlate(1.16, 1.48, 0.36, plate, 0, -0.95, 0.52, 0.08)));
     }
-    armor.push(add(head, sculptedArmorPlate(1.88, 0.68, 0.28, plate, 0, 1.66, 0.88, 0.12)));
-    armor.push(add(head, sculptedArmorPlate(1.48, 0.44, 0.30, plateDark, 0, 0.26, 0.82, 0.1)));
+    armor.push(add(head, sculptedArmorPlate(1.90, 0.68, 0.30, plate, 0, 1.66, 0.88, 0.12)));
+    armor.push(add(head, sculptedArmorPlate(1.50, 0.44, 0.32, plateDark, 0, 0.24, 0.82, 0.10)));
   }
 
   root.traverse((o) => {
     if (o.isMesh) {
       o.castShadow = true;
-      o.receiveShadow = false;
+      o.receiveShadow = true;
     }
   });
   return { root, body, spine, neck, head, eyes, nape, arms, legs, meshes, armor, skinMat: skin, napeMat, hipH };

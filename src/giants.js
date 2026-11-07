@@ -67,6 +67,12 @@ export class Giant {
     this.flash = 0;
     this.stunT = 0;
     this.zoneMeshes = this.m.meshes.filter((mm) => mm.userData.zone !== 'body');
+    this.zones = {
+      armL: this.zoneMeshes.filter((mm) => mm.userData.zone === 'armL'),
+      armR: this.zoneMeshes.filter((mm) => mm.userData.zone === 'armR'),
+      legL: this.zoneMeshes.filter((mm) => mm.userData.zone === 'legL'),
+      legR: this.zoneMeshes.filter((mm) => mm.userData.zone === 'legR'),
+    };
     if (this.T.armored) this.m.armor[0].userData.isArmor = true;
     for (const mm of this.m.meshes) mm.userData.giant = this;
   }
@@ -509,6 +515,8 @@ export class Giant {
       }
       const k = Math.max(0, 1 - this.deathT / 7);
       m.skinMat.color.multiplyScalar(1 - dt * 0.08);
+      const ember = Math.max(0, Math.sin(Math.min(1, this.deathT / 5) * Math.PI)) * 0.35;
+      m.skinMat.emissive.setRGB(ember * 1.4, ember * 0.35, ember * 0.1);
       if (this.deathT > 5) this.root.scale.setScalar(this.s * Math.max(0.01, k * 3.5));
     }
   }

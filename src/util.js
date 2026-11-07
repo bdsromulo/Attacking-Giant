@@ -50,47 +50,83 @@ export function rayAABB(o, d, min, max, maxT, outN) {
   return tmin;
 }
 
-// Geometria de caixa colorida, não indexada, pronta para merge.
+// Geometria de caixa colorida com UVs em escala de mundo (ou unitária) e AO sutil, pronta para merge.
 const _c = new THREE.Color();
-export function coloredBox(sx, sy, sz, color, x = 0, y = 0, z = 0, rotY = 0, jitter = 0.035) {
+export function coloredBox(sx, sy, sz, color, x = 0, y = 0, z = 0, rotY = 0, jitter = 0.035, uvTile = 4.0, rotZ = 0) {
   const g = new THREE.BoxGeometry(sx, sy, sz).toNonIndexed();
-  g.deleteAttribute('uv');
+  if (uvTile > 0) {
+    // Escala UVs proporcionalmente às dimensões de cada face da caixa
+    const pos = g.attributes.position;
+    const nrm = g.attributes.normal;
+    const uv = g.attributes.uv;
+    for (let i = 0; i < pos.count; i++) {
+      const nx = Math.abs(nrm.getX(i)), ny = Math.abs(nrm.getY(i));
+      let uMul, vMul;
+      if (nx > 0.5) { uMul = sz / uvTile; vMul = sy / uvTile; }
+      else if (ny > 0.5) { uMul = sx / uvTile; vMul = sz / uvTile; }
+      else { uMul = sx / uvTile; vMul = sy / uvTile; }
+      uv.setXY(i, uv.getX(i) * uMul, uv.getY(i) * vMul);
+    }
+  }
+  if (rotZ) g.rotateZ(rotZ);
   if (rotY) g.rotateY(rotY);
   g.translate(x, y, z);
-  paint(g, color, jitter);
+  paint(g, color, jitter, true);
   return g;
 }
 
-export function paint(g, color, jitter = 0) {
+export function paint(g, color, jitter = 0, worldAO = false) {
   _c.set(color);
   if (jitter) _c.offsetHSL(0, 0, (Math.random() * 2 - 1) * jitter);
-  const n = g.attributes.position.count;
+  const pos = g.attributes.position;
+  const n = pos.count;
   const arr = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) { arr[i * 3] = _c.r; arr[i * 3 + 1] = _c.g; arr[i * 3 + 2] = _c.b; }
+  for (let i = 0; i < n; i++) {
+    let ao = 1.0;
+    if (worldAO) {
+      const py = pos.getY(i);
+      if (py < 3.5) ao = 0.84 + 0.16 * clamp(py / 3.5, 0, 1);
+    }
+    arr[i * 3] = _c.r * ao;
+    arr[i * 3 + 1] = _c.g * ao;
+    arr[i * 3 + 2] = _c.b * ao;
+  }
   g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
   return g;
 }
 
-// Prisma triangular (telhado) com cumeeira no eixo X.
+// Prisma triangular (telhado) com cumeeira no eixo X e UVs alinhadas às telhas.
 export function roofPrism(w, h, d, color, x, y, z, alongZ = false) {
   const hw = w / 2, hd = d / 2;
-  // vértices: base retangular em y=0, cumeeira em y=h no centro de z
+  const slopeLen = Math.hypot(hd, h);
+  const tileScale = 3.2;
+  const uW = w / tileScale;
+  const vS = slopeLen / tileScale;
+
   const A = [-hw, 0, -hd], B = [hw, 0, -hd], C = [hw, 0, hd], D = [-hw, 0, hd];
   const E = [-hw, h, 0], F = [hw, h, 0];
   const tris = [
-    A, F, B, A, E, F,       // inclinação -z
-    D, C, F, D, F, E,       // inclinação +z
-    A, D, E,                // empena -x
-    B, F, C,                // empena +x
-    A, B, C, A, C, D,       // fundo
+    [A, [0, 0]], [F, [uW, vS]], [B, [uW, 0]],
+    [A, [0, 0]], [E, [0, vS]], [F, [uW, vS]],
+    [D, [uW, 0]], [C, [0, 0]], [F, [0, vS]],
+    [D, [uW, 0]], [F, [0, vS]], [E, [uW, vS]],
+    [A, [0, 0]], [D, [d / tileScale, 0]], [E, [d / (2 * tileScale), h / tileScale]],
+    [B, [d / tileScale, 0]], [F, [d / (2 * tileScale), h / tileScale]], [C, [0, 0]],
+    [A, [0, 0]], [B, [uW, 0]], [C, [uW, d / tileScale]],
+    [A, [0, 0]], [C, [uW, d / tileScale]], [D, [0, d / tileScale]],
   ];
   const pos = new Float32Array(tris.length * 3);
-  tris.forEach((v, i) => { pos[i * 3] = v[0]; pos[i * 3 + 1] = v[1]; pos[i * 3 + 2] = v[2]; });
+  const uvs = new Float32Array(tris.length * 2);
+  tris.forEach(([v, uv], i) => {
+    pos[i * 3] = v[0]; pos[i * 3 + 1] = v[1]; pos[i * 3 + 2] = v[2];
+    uvs[i * 2] = uv[0]; uvs[i * 2 + 1] = uv[1];
+  });
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   g.computeVertexNormals();
   if (alongZ) g.rotateY(Math.PI / 2);
   g.translate(x, y, z);
-  paint(g, color, 0.03);
+  paint(g, color, 0.025, false);
   return g;
 }

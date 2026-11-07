@@ -1,5 +1,10 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { CFG } from './config.js';
+import { loadBlenderAssets } from './assets.js';
 import { World } from './world.js';
 import { Effects } from './effects.js';
 import { Audio } from './audio.js';
@@ -40,7 +45,7 @@ const KEY_HELP = {
   split: 'Segure ao disparar: ganchos abrem para os lados da mira',
   hookL: 'Dispara/segura gancho esq. · em postura: Lunge / Disparo esq. (LMB+RMB = Giro Duplo)',
   hookR: 'Dispara/segura gancho dir. · em postura: Arremesso de Lâmina / Disparo dir.',
-  hardLand: 'Segure ao tocar o chão: freia e absorve o impacto (senão desliza)',
+  hardLand: 'Segure ao tocar o chão: freia no ato com agachamento profundo (sem segurar: desliza ou absorve suave)',
   ready: 'Alterna postura (ou segure para encadear lunges seguidos)',
   reload: 'Troca lâminas ou recarrega APG / Lanças do Trovão (-10% veloc. durante recarga)',
   interact: 'Dentro do posto: reabastece (cancela se sair da zona)',
@@ -84,18 +89,24 @@ class Game {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 1.08;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.Fog('#cfe0ea', 180, 1150);
+    this.scene.fog = new THREE.Fog('#d2e3ee', 210, 1240);
     this.camera = new THREE.PerspectiveCamera(this.settings.fov, window.innerWidth / window.innerHeight, 0.1, 3000);
 
-    this.hemi = new THREE.HemisphereLight('#cfe4ff', '#7a6a4a', 1.1);
+    // Iluminação solar vibrante + preenchimento celeste rebote estilo RAoT
+    this.hemi = new THREE.HemisphereLight('#d2e6ff', '#8f7d60', 1.28);
     this.scene.add(this.hemi);
-    this.sun = new THREE.DirectionalLight('#fff1d6', 2.3);
+    this.sun = new THREE.DirectionalLight('#fff2dc', 2.52);
     this.sunDir = new THREE.Vector3(-0.45, 0.8, 0.35).normalize();
     this.scene.add(this.sun, this.sun.target);
+    this.fillLight = new THREE.DirectionalLight('#9dc2eb', 0.66);
+    this.fillLight.position.set(110, 90, -90);
+    this.scene.add(this.fillLight);
+
+    this.setupPostProcessing();
     this.applyShadows();
 
     this.world = new World(this.scene);
@@ -144,20 +155,36 @@ class Game {
   }
   saveRecords() { try { localStorage.setItem('bastiao.records', JSON.stringify(this.records)); } catch { /* sem storage */ } }
 
+  setupPostProcessing() {
+    const pr = this.renderer.getPixelRatio();
+    const w = Math.max(1, Math.floor(window.innerWidth * pr));
+    const h = Math.max(1, Math.floor(window.innerHeight * pr));
+    const samples = this.renderer.capabilities.isWebGL2 ? Math.min(4, this.renderer.capabilities.maxSamples || 0) : 0;
+    const rt = new THREE.WebGLRenderTarget(w, h, { samples });
+    this.composer = new EffectComposer(this.renderer, rt);
+    this.composer.setPixelRatio(pr);
+    this.composer.setSize(window.innerWidth, window.innerHeight);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.20, 0.44, 0.88);
+    this.composer.addPass(this.bloomPass);
+    this.composer.addPass(new OutputPass());
+  }
+
   applyShadows() {
     const q = +this.settings.shadow;
     this.renderer.shadowMap.enabled = q > 0;
     this.sun.castShadow = q > 0;
+    this.useBloom = q >= 1;
     const size = q >= 2 ? 4096 : 2048;
     if (this.sun.shadow.mapSize.x !== size) {
       this.sun.shadow.mapSize.set(size, size);
       if (this.sun.shadow.map) { this.sun.shadow.map.dispose(); this.sun.shadow.map = null; }
     }
-    const S = 95;
-    Object.assign(this.sun.shadow.camera, { left: -S, right: S, top: S, bottom: -S, near: 1, far: 500 });
+    const S = 105;
+    Object.assign(this.sun.shadow.camera, { left: -S, right: S, top: S, bottom: -S, near: 1, far: 520 });
     this.sun.shadow.camera.updateProjectionMatrix();
-    this.sun.shadow.bias = -0.0004;
-    this.sun.shadow.normalBias = 0.6;
+    this.sun.shadow.bias = -0.00035;
+    this.sun.shadow.normalBias = 0.55;
     this.scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; });
   }
 
@@ -165,6 +192,8 @@ class Game {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    if (this.composer) this.composer.setSize(window.innerWidth, window.innerHeight);
+    if (this.bloomPass) this.bloomPass.setSize(window.innerWidth, window.innerHeight);
   }
 
   // ================= UI =================
@@ -745,15 +774,24 @@ class Game {
       if (this.camera.fov !== 60) { this.camera.fov = 60; this.camera.updateProjectionMatrix(); }
       this.giants.update(dt, this.ctx);
     }
-    this.effects.update(gdt);
+    this.effects.update(gdt, this.camera);
     this.world.update(dt, this.camera.position);
+    // Neblina atmosférica sensível à altitude (abre o horizonte ao voar sobre telhados e muralha, como no RAoT)
+    const alt = clamp(this.camera.position.y / 95, 0, 1);
+    this.scene.fog.near = 210 + alt * 115;
+    this.scene.fog.far = 1240 + alt * 340;
     // sol segue o foco (jogador ou câmera do menu)
-    const focus = this.state === 'menu' ? new THREE.Vector3(0, 0, 0) : this.player.pos;
-    this.sun.target.position.copy(focus);
-    this.sun.position.copy(focus).addScaledVector(this.sunDir, 220);
-    this.renderer.render(this.scene, this.camera);
+    if (this.state !== 'debug') {
+      const focus = this.state === 'menu' ? new THREE.Vector3(0, 0, 0) : this.player.pos;
+      this.sun.target.position.copy(focus);
+      this.sun.position.copy(focus).addScaledVector(this.sunDir, 220);
+    }
+    if (this.composer && this.useBloom) this.composer.render();
+    else this.renderer.render(this.scene, this.camera);
     this.input.endFrame();
   }
 }
 
-window.game = new Game();
+loadBlenderAssets().finally(() => {
+  window.game = new Game();
+});

@@ -151,6 +151,8 @@ export class Player {
     this.invuln = 0;
     this.lmbHeld = false; this.poised = false; this.poiseCD = 0;
     this.rollCD = 0; this.rollT = 0; this.slideT = 0;
+    this.landAnim = { t: 0, dur: 0.34, power: 0, kind: 'soft' };
+    this.landDip = 0;
     this.emoteT = 0; this.emoteIdx = 0;
     this.flareCD = 0; this.flares = { smoke: 3, acoustic: 2 };
     this.resupActive = false;
@@ -247,6 +249,7 @@ export class Player {
       this.vel.y = CFG.jumpSpeed;
       this.onGround = false;
       this.slideT = 0;
+      this.landAnim.t = 0;
     }
     if (I.pressed(K.down) && this.onGround && this.rollCD <= 0) this.startRoll();
 
@@ -1038,6 +1041,10 @@ export class Player {
     this.slashCD = Math.max(0, this.slashCD - dt);
     this.spinT = Math.max(0, this.spinT - dt);
     this.reelJerk = Math.max(0, this.reelJerk - dt * 2.2);
+    if (this.landAnim.t > 0) {
+      this.landAnim.t = Math.max(0, this.landAnim.t - dt);
+      if (!this.onGround && this.vel.y > 2) this.landAnim.t = 0;
+    }
 
     // stress
     this.stressDelay -= dt;
@@ -1234,29 +1241,51 @@ export class Player {
       }
     }
 
-    // colisões
+    // colisões (sem dano de queda nem de impacto em paredes/muralhas)
+    const preVy = v.y;
     const info = this.game.world.collideSphere(p, v, CFG.playerRadius, this.info);
     const touched = this.game.giants.collidePlayer(p, v, CFG.playerRadius);
     const wasGround = this.onGround;
     this.onGround = info.onGround;
     this.rollT = Math.max(0, this.rollT - h);
     this.slideT = Math.max(0, this.slideT - h);
+
     if (!wasGround && this.onGround) {
+      const fallSpeed = Math.max(info.impact, -preVy);
+      const horiz = Math.hypot(v.x, v.z);
+      const footPos = _a.copy(p).setY(p.y - CFG.playerRadius);
       if (I.down(K.hardLand)) {
-        // aterrissagem dura: freia e absorve o impacto do chão
+        // Aterrissagem dura (Ctrl): freia no ato e faz agachamento profundo estilo RAoT
         v.x *= 0.15; v.z *= 0.15;
-        if (info.normal.y > 0.5) info.impact = Math.min(info.impact, CFG.impactDamageSpeed);
-        this.game.audio.land(30);
-      } else if (Math.hypot(v.x, v.z) > CFG.runSpeed + 2) this.slideT = 0.6;
+        const pwr = clamp(fallSpeed / 22, 0.72, 1.15);
+        this.landAnim = { t: 0.44, dur: 0.44, power: pwr, kind: 'hard' };
+        this.game.audio.land(Math.max(26, fallSpeed));
+        this.game.effects.landingRing(footPos, pwr);
+        this.game.effects.addShake(Math.min(0.22, pwr * 0.16));
+      } else if (horiz > CFG.runSpeed + 2) {
+        // Aterrissagem em alta velocidade horizontal: deslize de botas com faíscas e poeira
+        this.slideT = 0.64;
+        const pwr = clamp(fallSpeed / 20, 0.55, 1.0);
+        this.landAnim = { t: 0.52, dur: 0.52, power: pwr, kind: 'slide' };
+        this.game.audio.land(Math.max(18, fallSpeed * 0.8));
+        this.game.effects.landingRing(footPos, pwr * 0.85);
+      } else if (fallSpeed > 1.8) {
+        // Aterrissagem ágil automática (absorve nos joelhos sem travar o movimento do jogador!)
+        const isHeavyDrop = fallSpeed > 26 && horiz < CFG.runSpeed * 0.7;
+        const pwr = clamp(fallSpeed / 18, 0.42, 1.05);
+        const dur = isHeavyDrop ? 0.42 : clamp(0.27 + pwr * 0.11, 0.28, 0.38);
+        this.landAnim = { t: dur, dur, power: pwr, kind: isHeavyDrop ? 'hard' : 'soft' };
+        this.game.audio.land(Math.max(12, fallSpeed * 0.85));
+        if (fallSpeed > 6.5) this.game.effects.landingRing(footPos, pwr * 0.65);
+        if (fallSpeed > 22) this.game.effects.addShake(Math.min(0.16, (fallSpeed - 20) * 0.006));
+      }
+    } else if (info.hit && !this.onGround && info.impact > 14 && !this.lunge) {
+      // Contato aéreo com parede/prédio: feedback tátil e sonoro leve, ZERO dano
+      this.game.audio.land(Math.min(26, info.impact * 0.6));
+      this.game.effects.dust(p, 0.85, 5);
+      this.game.effects.addShake(Math.min(0.16, info.impact * 0.003));
     }
-    if (info.impact > CFG.impactDamageSpeed && !this.lunge) {
-      this.damage((info.impact - CFG.impactDamageSpeed) * 2.2, 'impact');
-      this.game.effects.addShake(0.5);
-      this.game.effects.dust(p, 1.5, 8);
-    } else if (info.impact > 14) {
-      this.game.audio.land(info.impact);
-    }
-    if (!wasGround && this.onGround && info.impact > 8) this.game.effects.dust(_a.copy(p).setY(p.y - 0.4), 1.2, 6);
+
     if (this.lunge && (info.hit && info.impact > 3)) this.endLunge(false);
     if (touched && this.lunge && touched !== this.lunge.target.giant) this.endLunge(false);
   }
@@ -1290,16 +1319,46 @@ export class Player {
   // ================= VISUAL / CÂMERA =================
   updateEffects(dt) {
     const G = this.game;
+    const M = this.model;
     const sp = this.speed;
-    // jatos de gás contínuos
+
+    this.animateModel(dt);
+    M.group.updateMatrixWorld(true);
+
+    // jatos de gás contínuos + trilha volumétrica estilo RAoT
     const gasOn = this.alive && !this.grabbedBy && this.gas > 0 && (!!this.burst || this.gasFlow > 0 || !!this.lunge);
+    const nozzlePos = M.nozzle.getWorldPosition(_c);
     if (gasOn) {
-      const n = this.model.nozzle.getWorldPosition(_c);
-      G.effects.gasJet(n, this.burst ? this.burst.dir : this.vel.clone().normalize(), 1);
+      const jetDir = this.burst ? this.burst.dir : (sp > 0.5 ? _d.copy(this.vel).divideScalar(sp) : this.camFwd);
+      G.effects.gasJet(nozzlePos, jetDir, this.burst ? 1.15 : 0.85);
     }
+
+    // poeira e faíscas sob as botas ao deslizar no chão/telhado em alta velocidade
+    if (this.alive && this.onGround && this.slideT > 0 && Math.hypot(this.vel.x, this.vel.z) > CFG.runSpeed * 0.85) {
+      if (Math.random() < dt * 32) {
+        const fp = (Math.random() < 0.5 ? M.footL : M.footR).getWorldPosition(_d);
+        G.effects.puff(fp, _e.copy(this.vel).multiplyScalar(-0.18).setY(rand(0.4, 1.4)), '#ddd2be', rand(0.18, 0.34), rand(0.28, 0.48));
+        if (Math.random() < 0.35) G.effects.sparks(fp, 1);
+      }
+    }
+
+    // linhas de vento periféricas em alta velocidade aérea
+    if (this.alive && !this.onGround && sp > 28 && Math.random() < dt * clamp((sp - 26) * 1.4, 8, 45)) {
+      const ang = rand(0, Math.PI * 2);
+      const rad = rand(1.6, 3.6);
+      const streakPos = _d.copy(this.pos)
+        .addScaledVector(this.camFwd, rand(1.5, 4.5))
+        .addScaledVector(this.camRight, Math.cos(ang) * rad);
+      streakPos.y += 0.9 + Math.sin(ang) * rad;
+      G.effects.speedStreak(streakPos, this.vel);
+    }
+
+    const bladesActive = this.alive && !this.firstPerson && this.weapon === 'swords' && this.blades > 0 && this.reloadT <= 0 &&
+      (this.slashT > 0 || this.spinT > 0 || !!this.lunge || (this.poised && sp > 24));
+    G.effects.updatePlayerTrails(nozzlePos, this.camRight, gasOn, M.bladeBases, M.bladeTips, bladesActive);
+
     G.audio.setGas(gasOn ? 1 : 0);
     G.audio.setWind(sp);
-    this.animateModel(dt);
     this.updateCamera(dt);
     this.updateRopes();
   }
@@ -1316,49 +1375,148 @@ export class Player {
     if (this.poised || this.slashT > 0) yawT = Math.atan2(this.camFwd.x, this.camFwd.z);
     let dy = yawT - M.group.rotation.y;
     while (dy > Math.PI) dy -= Math.PI * 2; while (dy < -Math.PI) dy += Math.PI * 2;
-    M.group.rotation.y += dy * Math.min(1, dt * 10);
+    M.group.rotation.y += dy * Math.min(1, dt * 11);
     if (this.spinT > 0) M.group.rotation.y += (1 - this.spinT / 0.36) * Math.PI * 4;
 
     const air = !this.onGround;
-    const lean = air ? clamp(sp / 35, 0, 1) * 0.9 : clamp(horiz / CFG.runSpeed, 0, 1) * 0.15;
+    const sliding = this.onGround && this.slideT > 0 && horiz > CFG.runSpeed * 0.8;
+
+    // Envelope da animação de aterrissagem (compressão rápida nos joelhos + retorno elástico suave)
+    let landW = 0;
+    if (this.landAnim.t > 0 && this.onGround) {
+      const u = 1 - this.landAnim.t / Math.max(0.01, this.landAnim.dur); // 0 -> 1
+      landW = Math.sin(Math.pow(u, 0.58) * Math.PI) * this.landAnim.power;
+    }
+
+    // Inclinação do corpo (voo, corrida, deslize ou burst)
+    let lean = air ? clamp(sp / 34, 0, 1) * 0.88 : clamp(horiz / CFG.runSpeed, 0, 1) * 0.16;
+    let bankZ = clamp(-dy * 0.85, -0.62, 0.62);
+    if (sliding) lean = -0.18;
+    if (air && this.burst) {
+      const K = this.game.settings.keys;
+      if (this.burst.key === K.left) bankZ = clamp(bankZ + 0.48, -0.85, 0.85);
+      else if (this.burst.key === K.right) bankZ = clamp(bankZ - 0.48, -0.85, 0.85);
+      else if (this.burst.key === K.back) lean = -0.45;
+      else if (this.burst.key === K.up) lean = 0.22;
+    }
     if (M.root.rotation.x > Math.PI) M.root.rotation.x -= Math.PI * 2;
-    M.root.rotation.x = damp(M.root.rotation.x, lean, 6, dt);
-    M.root.rotation.z = damp(M.root.rotation.z, clamp(-dy * 0.8, -0.6, 0.6), 5, dt);
-    // pernas
-    this.anim.run += dt * horiz * 1.4;
-    const run = this.onGround ? clamp(horiz / CFG.runSpeed, 0, 1) : 0;
+    M.root.rotation.x = damp(M.root.rotation.x, lean, 7, dt);
+    M.root.rotation.z = damp(M.root.rotation.z, bankZ, 6, dt);
+
+    // Pernas (corrida, voo, deslize e agachamento de pouso com botas plantadas no chão)
+    this.anim.run += dt * horiz * 1.42;
+    const run = (this.onGround && !sliding) ? clamp(horiz / CFG.runSpeed, 0, 1) : 0;
     const s = Math.sin(this.anim.run);
-    M.legL.rotation.x = damp(M.legL.rotation.x, air ? -0.5 : -s * 0.9 * run, 10, dt);
-    M.legR.rotation.x = damp(M.legR.rotation.x, air ? -0.2 : s * 0.9 * run, 10, dt);
-    M.shinL.rotation.x = damp(M.shinL.rotation.x, air ? 0.9 : Math.max(0, s) * 1.1 * run, 10, dt);
-    M.shinR.rotation.x = damp(M.shinR.rotation.x, air ? 0.5 : Math.max(0, -s) * 1.1 * run, 10, dt);
-    // braços: postura, golpe, emote ou neutro
-    let aL = -0.3, aR = -0.3, zL = 0.25, zR = -0.25, fL = -0.6, fR = -0.6;
-    if (this.poised || this.lunge) {
-      if (this.weapon === 'swords') { aL = -2.2; aR = -2.2; zL = 0.6; zR = -0.6; fL = -0.4; fR = -0.4; }
-      else { aL = -1.55; aR = -1.55; zL = 0.18; zR = -0.18; fL = -0.1; fR = -0.1; }
+
+    let legLX = air ? -0.52 : -s * 0.9 * run;
+    let legRX = air ? -0.22 : s * 0.9 * run;
+    let shinLX = air ? 0.95 : Math.max(0, s) * 1.12 * run;
+    let shinRX = air ? 0.52 : Math.max(0, -s) * 1.12 * run;
+
+    if (air && this.burst) {
+      legLX = -0.78; legRX = -0.45;
+      shinLX = 1.35; shinRX = 0.95;
     }
-    if (this.slashT > 0) {
-      const k = this.slashT / CFG.slashTime;
-      aL = aR = -1.6 + (1 - k) * 2.4; zL = 0.9 * k; zR = -0.9 * k; fL = fR = -0.2;
+
+    let torsoX = 0;
+    let torsoY = 0;
+
+    if (sliding) {
+      // Deslize estilo RAoT sobre telhados/ruas
+      legLX = -0.95; shinLX = 1.52;
+      legRX = -0.36; shinRX = 1.18;
+      torsoX = 0.28;
+      torsoY = 0.34;
+    } else if (landW > 0.001) {
+      // Aterrissagem ágil ou dura: flexão assimétrica dos joelhos + inclinação atlética do tronco
+      const isHard = this.landAnim.kind === 'hard';
+      const runBlend = 1 - run * 0.45; // preserva fluidez se o jogador já estiver correndo!
+      const w = landW * (isHard ? 1.0 : runBlend);
+      legLX = legLX * (1 - Math.min(1, w)) + (isHard ? -1.14 : -0.84) * w;
+      legRX = legRX * (1 - Math.min(1, w)) + (isHard ? -0.86 : -0.68) * w;
+      shinLX = shinLX * (1 - Math.min(1, w)) + (isHard ? 1.96 : 1.56) * w;
+      shinRX = shinRX * (1 - Math.min(1, w)) + (isHard ? 1.68 : 1.36) * w;
+      torsoX += (isHard ? 0.58 : 0.36) * w;
+      torsoY += (isHard ? 0.16 : 0.08) * w;
     }
-    if (!air && !this.poised && this.slashT <= 0) { aL += s * 0.6 * run; aR -= s * 0.6 * run; }
+
+    const legRate = (landW > 0.02 || sliding) ? 22 : 11;
+    M.legL.rotation.x = damp(M.legL.rotation.x, legLX, legRate, dt);
+    M.legR.rotation.x = damp(M.legR.rotation.x, legRX, legRate, dt);
+    M.shinL.rotation.x = damp(M.shinL.rotation.x, shinLX, legRate, dt);
+    M.shinR.rotation.x = damp(M.shinR.rotation.x, shinRX, legRate, dt);
+
+    // Cinemática analítica do quadril no chão: abaixa o quadril exatamente na medida da flexão dos joelhos
+    // para que as solas das botas fiquem 100% plantadas no piso sem flutuar nem atravessar o chão!
+    let targetHipY = 0.01;
+    if (this.onGround && (landW > 0.001 || sliding)) {
+      const dropL = 0.435 * (1 - Math.cos(M.legL.rotation.x)) + 0.44 * (1 - Math.cos(M.legL.rotation.x + M.shinL.rotation.x));
+      const dropR = 0.435 * (1 - Math.cos(M.legR.rotation.x)) + 0.44 * (1 - Math.cos(M.legR.rotation.x + M.shinR.rotation.x));
+      targetHipY = 0.01 - clamp(Math.min(dropL, dropR), 0, 0.40);
+    }
+    M.hips.position.y = damp(M.hips.position.y, targetHipY, 24, dt);
+
+    // Braços: postura, golpe com torção de tronco, recarga nas bainhas, pouso, emote ou neutro
+    let aL = -0.28, aR = -0.28, zL = 0.24, zR = -0.24, fL = -0.58, fR = -0.58;
+    if (this.reloadT > 0) {
+      // Mãos buscam novas lâminas/cargas nas bainhas laterais do quadril
+      aL = 0.52; aR = 0.52; zL = 0.14; zR = -0.14; fL = -1.32; fR = -1.32;
+      torsoX += 0.16;
+    } else {
+      if (this.poised || this.lunge) {
+        if (this.weapon === 'swords') { aL = -2.18; aR = -2.18; zL = 0.62; zR = -0.62; fL = -0.38; fR = -0.38; }
+        else { aL = -1.55; aR = -1.55; zL = 0.18; zR = -0.18; fL = -0.1; fR = -0.1; }
+      }
+      if (this.slashT > 0) {
+        const k = clamp(this.slashT / CFG.slashTime, 0, 1);
+        const swing = 1 - k;
+        aL = aR = -1.75 + swing * 2.55;
+        zL = 0.92 * k - 0.25 * swing;
+        zR = -0.92 * k + 0.25 * swing;
+        fL = fR = -0.18;
+        torsoY += this.anim.slashSide * (k - 0.45) * 0.65;
+        torsoX += swing * 0.22;
+      } else if (!air && !this.poised) {
+        if (sliding) {
+          aL = 0.35; aR = -0.65; zL = 0.58; zR = -0.52; fL = -0.75; fR = -0.85;
+        } else {
+          aL += s * 0.62 * run;
+          aR -= s * 0.62 * run;
+          if (landW > 0.01) {
+            // Braços abrem lateralmente para contrabalançar o impacto da aterrissagem
+            const aw = Math.min(1.1, landW);
+            aL += 0.48 * aw; aR += 0.48 * aw;
+            zL += 0.46 * aw; zR -= 0.46 * aw;
+            fL -= 0.28 * aw; fR -= 0.28 * aw;
+          }
+        }
+      }
+    }
+
     if (this.grabbedBy) { aL = -2.8; aR = -2.8; }
     if (this.emoteT > 0) {
-      if (this.emoteIdx === 0) { // Saudação (punho direito no peito)
-        aR = -1.6; zR = 0.75; fR = -1.55; aL = -0.15; zL = -0.15;
+      if (this.emoteIdx === 0) { // Saudação (Shinzou wo Sasageyo: punho direito no coração, esquerdo atrás)
+        aR = -1.58; zR = 0.76; fR = -1.55; aL = 0.32; zL = -0.12; fL = -1.25;
       } else if (this.emoteIdx === 1) { // Acenar
         aR = -2.9; zR = -0.4 + Math.sin(this.time * 14) * 0.5; fR = -0.3;
-      } else if (this.emoteIdx === 2) { // Vitória (ambos os braços erguidos)
+      } else if (this.emoteIdx === 2) { // Vitória
         aL = -2.85; aR = -2.85; zL = 0.45; zR = -0.45; fL = -0.2; fR = -0.2;
       } else { // Inspecionar arma
         aR = -1.8; zR = 0.35; fR = -0.9 + Math.sin(this.time * 8) * 0.35;
       }
     }
+
+    M.torso.rotation.x = damp(M.torso.rotation.x, torsoX, 16, dt);
+    M.torso.rotation.y = damp(M.torso.rotation.y, torsoY, 16, dt);
+
+    // Cabeça acompanha o horizonte/mira em vez de olhar para o chão quando inclinado no voo ou no pouso
+    const headPitch = clamp(-M.root.rotation.x * 0.62 - M.torso.rotation.x * 0.55 - this.pitch * 0.28, -0.68, 0.55);
+    M.head.rotation.x = damp(M.head.rotation.x, headPitch, 12, dt);
+
     if (this.rollT > 0) { M.root.rotation.x = (1 - this.rollT / 0.45) * Math.PI * 2; }
-    M.armL.rotation.x = damp(M.armL.rotation.x, aL, 16, dt); M.armR.rotation.x = damp(M.armR.rotation.x, aR, 16, dt);
-    M.armL.rotation.z = damp(M.armL.rotation.z, zL, 12, dt); M.armR.rotation.z = damp(M.armR.rotation.z, zR, 12, dt);
-    M.foreL.rotation.x = damp(M.foreL.rotation.x, fL, 12, dt); M.foreR.rotation.x = damp(M.foreR.rotation.x, fR, 12, dt);
+    M.armL.rotation.x = damp(M.armL.rotation.x, aL, 17, dt); M.armR.rotation.x = damp(M.armR.rotation.x, aR, 17, dt);
+    M.armL.rotation.z = damp(M.armL.rotation.z, zL, 14, dt); M.armR.rotation.z = damp(M.armR.rotation.z, zR, 14, dt);
+    M.foreL.rotation.x = damp(M.foreL.rotation.x, fL, 14, dt); M.foreR.rotation.x = damp(M.foreR.rotation.x, fR, 14, dt);
 
     // Visibilidade da arma equipada
     M.bladeL.visible = M.bladeR.visible = this.weapon === 'swords' && this.blades > 0 && this.reloadT <= 0;
@@ -1375,7 +1533,18 @@ export class Player {
   updateCamera(dt) {
     const cam = this.game.camera, G = this.game;
     const sp = this.speed;
-    const target = _a.copy(this.pos); target.y += 1.05;
+    // Leve amortecimento vertical de câmera ao aterrissar (sensação de peso/absorção nos joelhos)
+    let targetDip = 0;
+    if (this.landAnim.t > 0 && this.onGround) {
+      const u = 1 - this.landAnim.t / Math.max(0.01, this.landAnim.dur);
+      targetDip = Math.sin(Math.pow(u, 0.58) * Math.PI) * this.landAnim.power * (this.landAnim.kind === 'hard' ? 0.28 : 0.16);
+    } else if (this.onGround && this.slideT > 0) {
+      targetDip = 0.18;
+    }
+    this.landDip = damp(this.landDip, targetDip, 18, dt);
+
+    const target = _a.copy(this.pos);
+    target.y += 1.05 - this.landDip;
     if (this.firstPerson && !this.grabbedBy) {
       cam.position.copy(target).addScaledVector(this.camFwd, 0.22);
     } else {
