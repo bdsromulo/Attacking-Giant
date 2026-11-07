@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BASTIÃO — Caçadores de Colossos</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%231a1714'/%3E%3Cpath d='M3 13 L13 3 M3 3 L13 13' stroke='%23e0b45a' stroke-width='2.2'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <!-- ===== HUD ===== -->
+  <div id="hud" class="hidden">
+    <div id="vignette"></div>
+    <div id="hurtflash"></div>
+    <canvas id="radar" width="170" height="170"></canvas>
+    <div id="topbar">
+      <div id="waveLabel"></div>
+      <div id="waveSub"></div>
+    </div>
+    <div id="scoreBox"><div id="score">0</div><div id="combo"></div></div>
+    <div id="feed"></div>
+    <div id="msg"></div>
+    <div id="bigmsg"></div>
+
+    <div id="crosshair">
+      <div class="ch-hook" id="chL"></div>
+      <div class="ch-dot" id="chDot"></div>
+      <div class="ch-hook" id="chR"></div>
+      <div id="chDist"></div>
+    </div>
+    <div id="resup"><div id="resupFill"></div><span>REABASTECENDO</span></div>
+    <div id="grabMeter"><div id="grabFill"></div><span>CLIQUE PARA CORTAR!</span></div>
+
+    <div id="gear">
+      <div class="bar"><label>VIDA</label><div class="track"><div id="hpFill" class="fill hp"></div></div></div>
+      <div class="bar"><label>GÁS</label><div class="track"><div id="gasFill" class="fill gas"></div></div><b id="gasNum"></b></div>
+      <div class="bar"><label>STRESS</label><div class="track"><div id="stressFill" class="fill stress"></div></div></div>
+      <div class="bar"><label>LÂMINA</label><div class="track"><div id="bladeFill" class="fill blade"></div></div></div>
+      <div id="bladeSets"></div>
+    </div>
+    <div id="speedBox"><div id="speed">0</div><div class="unit">m/s</div><div id="hookState"></div></div>
+    <div id="dmgLayer"></div>
+  </div>
+
+  <!-- ===== MENUS ===== -->
+  <div id="menu" class="screen">
+    <div class="title">
+      <h1>BASTIÃO</h1>
+      <h2>CAÇADORES DE COLOSSOS</h2>
+    </div>
+    <div class="menu-body">
+      <div class="col">
+        <button data-mode="survival" class="primary">SOBREVIVÊNCIA</button>
+        <button data-mode="training">TREINO</button>
+        <button data-mode="race">CORRIDA</button>
+        <button data-mode="free">EXPLORAÇÃO LIVRE</button>
+        <div class="sep"></div>
+        <button data-panel="skins">PERSONAGEM</button>
+        <button data-panel="controls">CONTROLES</button>
+        <button data-panel="settings">CONFIGURAÇÕES</button>
+      </div>
+      <div class="col panel" id="panel-info">
+        <h3>A muralha caiu.</h3>
+        <p>Colossos atravessam a brecha a leste. Você é da Ordem do Gancho: cabos de aço, gás comprimido e duas lâminas.</p>
+        <p>Corte a <b>nuca</b> para matar. Quanto mais rápido você estiver, mais fundo o corte.</p>
+        <p class="dim">Clique em um modo para começar. O mouse será capturado — ESC para pausar.</p>
+        <div id="records"></div>
+      </div>
+      <div class="col panel hidden" id="panel-controls">
+        <h3>Controles</h3>
+        <table id="controlsTable"></table>
+        <p class="dim">Dica: prenda, recolha com o reel, solte no auge do balanço para manter o momento. Mira verde = alvo de lunge ao alcance.</p>
+      </div>
+      <div class="col panel hidden" id="panel-settings">
+        <h3>Configurações</h3>
+        <label>Sensibilidade <input type="range" id="setSens" min="0.2" max="3" step="0.05" /></label>
+        <label>Campo de visão <input type="range" id="setFov" min="60" max="100" step="1" /></label>
+        <label>Volume <input type="range" id="setVol" min="0" max="1" step="0.05" /></label>
+        <label>Sombras
+          <select id="setShadow"><option value="0">Desligadas</option><option value="1">Baixa</option><option value="2">Alta</option></select>
+        </label>
+        <label class="chk"><input type="checkbox" id="setInvert" /> Inverter eixo Y</label>
+        <h3>Teclas <small class="dim">(clique e pressione a nova tecla)</small></h3>
+        <div id="keybinds"></div>
+        <button id="btnResetKeys" class="small">RESTAURAR PADRÃO</button>
+      </div>
+      <div class="col panel hidden" id="panel-skins">
+        <h3>Personagem</h3>
+        <div id="skinList"></div>
+      </div>
+    </div>
+    <div class="foot">Jogo original de ação com ganchos • Three.js</div>
+  </div>
+
+  <div id="pause" class="screen hidden">
+    <h1>PAUSADO</h1>
+    <button id="btnResume" class="primary">CONTINUAR</button>
+    <button id="btnRestart">REINICIAR</button>
+    <button id="btnQuit">MENU PRINCIPAL</button>
+  </div>
+
+  <div id="upgrade" class="screen hidden">
+    <h1 id="upTitle">ONDA CONCLUÍDA</h1>
+    <p class="dim">Escolha uma melhoria para o equipamento</p>
+    <div id="cards"></div>
+  </div>
+
+  <div id="gameover" class="screen hidden">
+    <h1 id="goTitle">VOCÊ CAIU</h1>
+    <div id="goStats"></div>
+    <button id="btnRetry" class="primary">TENTAR DE NOVO</button>
+    <button id="btnMenu">MENU PRINCIPAL</button>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
