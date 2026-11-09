@@ -53,6 +53,12 @@ export class HUD {
     $('gear').appendChild(this.flaresEl);
     this.board = document.createElement('div'); this.board.id = 'board'; this.board.className = 'hidden';
     this.root.appendChild(this.board);
+
+    // Badge de status Multiplayer P2P abaixo do radar
+    this.netBadge = document.createElement('div');
+    this.netBadge.id = 'netBadge';
+    this.netBadge.className = 'hidden';
+    this.root.appendChild(this.netBadge);
   }
 
   show() { this.root.classList.remove('hidden'); }
@@ -174,12 +180,21 @@ export class HUD {
     this.gL.firstChild.style.height = clamp(weapPct / 100, 0, 1) * 100 + '%';
     this.gR.firstChild.style.height = clamp(P.gas / P.st.gasMax, 0, 1) * 100 + '%';
 
+    // badge de sala P2P
+    if (G.net && G.net.active) {
+      this.netBadge.classList.remove('hidden');
+      const role = G.net.isHost ? 'HOST' : 'P2P';
+      this.netBadge.innerHTML = `<span class="dot"></span>SALA <b>${G.net.roomCode}</b> · ${G.net.playerCount}/${G.net.maxPlayers} · <em>${role}</em>`;
+    } else {
+      this.netBadge.classList.add('hidden');
+    }
+
     // placar (Tab)
     const showBoard = G.input.down(K.scoreboard);
     this.board.classList.toggle('hidden', !showBoard);
     if (showBoard && G.stats) {
       const st = G.stats;
-      this.board.innerHTML = '<h3>ESTATÍSTICAS</h3>' + [
+      let html = '<h3>ESTATÍSTICAS</h3>' + [
         ['Modo', G.mode.key.toUpperCase()],
         ['Equipamento', WEAPON_NAMES[P.weapon]],
         ['Pontuação', Math.round(G.score || 0).toLocaleString('pt-BR')],
@@ -187,6 +202,36 @@ export class HUD {
         ['Maior dano', st.bestHit], ['Velocidade máxima', Math.round(st.maxSpeed) + ' m/s'],
         ['Tempo', Math.floor(st.time / 60) + 'min ' + Math.floor(st.time % 60) + 's'],
       ].map(([a, b]) => `<div>${a}<b>${b}</b></div>`).join('');
+
+      if (G.net && G.net.active) {
+        html += `<h3 style="margin-top:14px">ESQUADRÃO P2P · SALA ${G.net.roomCode}</h3>`;
+        html += `<table class="mp-board-table"><thead><tr><th>CAÇADOR</th><th>PAPEL</th><th>ARMA</th><th>ABATES</th><th>PONTOS</th><th>STATUS</th></tr></thead><tbody>`;
+        const all = [
+          {
+            name: G.net.nickname + ' (Você)',
+            role: G.net.isHost ? 'HOST' : 'PAR',
+            weapon: WEAPON_NAMES[P.weapon] || 'ODM',
+            kills: st.kills,
+            score: Math.round(G.score || 0),
+            alive: P.alive,
+            ping: 'LOCAL',
+          },
+          ...Array.from(G.net.remotes.values()).map((r) => ({
+            name: r.name,
+            role: r.peerId === G.net.hostId ? 'HOST' : 'PAR',
+            weapon: WEAPON_NAMES[r.weapon] || 'ODM',
+            kills: r.kills || 0,
+            score: Math.round(r.score || 0),
+            alive: r.alive,
+            ping: `${Math.round(r.ping || 18)}ms`,
+          })),
+        ];
+        for (const row of all) {
+          html += `<tr><td><b>${row.name}</b></td><td>${row.role}</td><td>${row.weapon}</td><td>${row.kills}</td><td>${row.score.toLocaleString('pt-BR')}</td><td>${row.alive ? '<span style="color:#5dff7a">VIVO</span>' : '<span style="color:#ff5a4a">CAÍDO</span>'} <small class="dim">(${row.ping})</small></td></tr>`;
+        }
+        html += `</tbody></table>`;
+      }
+      this.board.innerHTML = html;
     }
     this.el.vignette.style.opacity = clamp((sp - 22) / 40, 0, 0.9);
 
@@ -244,6 +289,32 @@ export class HUD {
       n.d.style.opacity = Math.min(1, n.t * 2);
     }
 
+    // Placas flutuantes 3D dos aliados P2P
+    if (G.net && G.net.remotes.size > 0) {
+      for (const r of G.net.remotes.values()) {
+        if (!r.labelEl) continue;
+        if (!r.alive && !r.grabbed) {
+          r.labelEl.style.opacity = 0;
+          continue;
+        }
+        _p.set(r.pos.x, r.pos.y + 2.35, r.pos.z).project(cam);
+        if (_p.z <= 0 || _p.z >= 1) {
+          r.labelEl.style.opacity = 0;
+          continue;
+        }
+        const dist = Math.round(r.pos.distanceTo(P.pos));
+        const sx = ((_p.x + 1) / 2) * w;
+        const sy = ((1 - _p.y) / 2) * h;
+        r.labelEl.style.left = `${Math.round(sx)}px`;
+        r.labelEl.style.top = `${Math.round(sy)}px`;
+        r.labelEl.style.opacity = clamp(1.2 - dist / 450, 0.25, 0.95);
+        const nameSpan = r.labelEl.querySelector('.mp-name');
+        if (nameSpan) nameSpan.textContent = `${r.name} · ${dist}m`;
+        const hpBar = r.labelEl.querySelector('.mp-hp i');
+        if (hpBar) hpBar.style.width = `${clamp((r.hp || 100) / (r.hpMax || 100), 0, 1) * 100}%`;
+      }
+    }
+
     this.drawCompass();
     this.drawRadar();
   }
@@ -275,6 +346,20 @@ export class HUD {
       const x = half - (diff / span) * (half - 16);
       c.fillStyle = g.T.boss ? '#ff3a2a' : '#ff8a6a';
       c.beginPath(); c.arc(x, 5, g.T.boss ? 3.5 : 2.2, 0, Math.PI * 2); c.fill();
+    }
+    // marcadores de aliados P2P na bússola
+    if (G.net && G.net.remotes.size > 0) {
+      for (const r of G.net.remotes.values()) {
+        if (!r.alive) continue;
+        const ra = Math.atan2(-(r.pos.x - P.pos.x), -(r.pos.z - P.pos.z));
+        const diff = angleDiff(ra, heading);
+        if (Math.abs(diff) > span) continue;
+        const x = half - (diff / span) * (half - 16);
+        c.fillStyle = '#5dffda';
+        c.beginPath();
+        c.moveTo(x, 2); c.lineTo(x + 3.5, 6); c.lineTo(x, 10); c.lineTo(x - 3.5, 6);
+        c.closePath(); c.fill();
+      }
     }
     // marca central
     c.fillStyle = '#ffffff';
@@ -314,6 +399,19 @@ export class HUD {
       c.fillStyle = !g.alive ? 'rgba(150,150,150,.5)' : g.T.boss ? '#ff3a2a' : g.T.erratic ? '#ff9a3a' : g.T.armored ? '#d8d0c0' : '#e06a5a';
       const s = g.T.boss ? 6 : 3.5;
       c.beginPath(); c.arc(x, z, s, 0, Math.PI * 2); c.fill();
+    }
+    // aliados P2P
+    if (G.net && G.net.remotes.size > 0) {
+      for (const r of G.net.remotes.values()) {
+        const [x, z] = tx(r.pos.x, r.pos.z);
+        c.fillStyle = r.alive ? '#5dffda' : 'rgba(93,255,218,0.35)';
+        c.beginPath();
+        c.arc(x, z, 4.2, 0, Math.PI * 2);
+        c.fill();
+        c.strokeStyle = '#0b221e';
+        c.lineWidth = 1.2;
+        c.stroke();
+      }
     }
     c.restore();
     // jogador (sempre apontando para cima)

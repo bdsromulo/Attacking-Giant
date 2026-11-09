@@ -13,6 +13,7 @@ import { GiantManager, GIANT_TYPES, randomGiantType } from './giants.js';
 import { Player, WEAPON_NAMES } from './player.js';
 import { HUD } from './hud.js';
 import { SKINS } from './models.js';
+import { NetManager } from './net.js';
 import { rand, pick, clamp } from './util.js';
 
 const $ = (id) => document.getElementById(id);
@@ -120,6 +121,7 @@ class Game {
     this.player = new Player(this);
     this.player.setSkin(this.settings.skin);
     this.player.weapon = this.settings.weapon || 'swords';
+    this.net = new NetManager(this);
     this.ctx = { player: this.player, world: this.world, effects: this.effects, audio: this.audio, giants: this.giants.giants, game: this };
 
     this.state = 'menu';
@@ -132,12 +134,30 @@ class Game {
     window.addEventListener('keydown', (e) => { if (e.code === 'Escape' && this.state === 'playing') this.pause(); });
     // Rede de segurança: Ctrl+W (Ctrl é Reel Out) pede confirmação em vez de fechar a aba
     window.addEventListener('beforeunload', (e) => { if (this.state !== 'menu') { e.preventDefault(); e.returnValue = ''; } });
+    window.addEventListener('pagehide', () => { if (this.net && this.net.active) this.net.leaveRoom(false); });
     this.input.onLockChange = (locked) => {
       if (!locked && this.state === 'playing') this.pause();
     };
+    this.canvas.addEventListener('click', () => {
+      if (this.state === 'playing' && !this.input.locked) {
+        this.audio.init();
+        this.lockInput();
+      }
+    });
     this.flares = [];
     this.setupUI();
+    this.net.onStatusChange = () => this.renderMpPanel();
+    this.net.onLobbyChange = () => this.renderMpLobby();
+    this.net.initLobby();
     this.enterMenu();
+
+    // Entrada direta por link de sala (?room=ABC123) estilo Jackbox
+    const urlRoom = new URLSearchParams(window.location.search).get('room');
+    if (urlRoom && urlRoom.trim()) {
+      this.net.joinRoomByCode(urlRoom.trim(), false);
+      this.startMode('survival', true);
+    }
+
     this.last = performance.now();
     requestAnimationFrame((t) => this.loop(t));
   }
@@ -229,6 +249,125 @@ class Game {
     this.buildKeybinds();
     this.buildControlsTable();
     this.buildSkins();
+    this.setupMpUI();
+  }
+
+  setupMpUI() {
+    const nameEl = $('mpName');
+    if (nameEl) {
+      nameEl.value = this.net.nickname;
+      nameEl.addEventListener('input', () => this.net.setNickname(nameEl.value));
+    }
+    const turnUrl = $('mpTurnUrl'), turnUser = $('mpTurnUser'), turnPass = $('mpTurnPass');
+    if (turnUrl && turnUser && turnPass) {
+      turnUrl.value = this.net.customTurn.url || '';
+      turnUser.value = this.net.customTurn.username || '';
+      turnPass.value = this.net.customTurn.credential || '';
+      const saveTurn = () => this.net.setCustomTurn(turnUrl.value, turnUser.value, turnPass.value);
+      turnUrl.addEventListener('change', saveTurn);
+      turnUser.addEventListener('change', saveTurn);
+      turnPass.addEventListener('change', saveTurn);
+    }
+    const btnCreate = $('btnMpCreate');
+    if (btnCreate) {
+      btnCreate.onclick = () => {
+        this.audio.init(); this.audio.ui();
+        const mode = ($('mpModeSelect') && $('mpModeSelect').value) || 'survival';
+        const isPub = $('mpPublicChk') ? $('mpPublicChk').checked : true;
+        this.net.createRoom(mode, isPub);
+        this.startMode(mode);
+      };
+    }
+    const joinByInput = () => {
+      const inp = $('mpCodeInput');
+      const code = inp ? inp.value.trim().toUpperCase() : '';
+      if (!code) return;
+      this.audio.init(); this.audio.ui();
+      this.net.joinRoomByCode(code, false);
+      this.startMode('survival', true);
+    };
+    if ($('btnMpJoinCode')) $('btnMpJoinCode').onclick = joinByInput;
+    if ($('mpCodeInput')) {
+      $('mpCodeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') joinByInput(); });
+    }
+    const copyAction = (btn) => {
+      this.audio.init(); this.audio.ui();
+      this.net.copyShareLink().then((url) => {
+        if (!url || !btn) return;
+        const old = btn.textContent;
+        btn.textContent = 'LINK COPIADO!';
+        setTimeout(() => { btn.textContent = old; }, 1800);
+      });
+    };
+    if ($('btnMpCopyLink')) $('btnMpCopyLink').onclick = (e) => copyAction(e.currentTarget);
+    if ($('btnCopyRoomPause')) $('btnCopyRoomPause').onclick = (e) => copyAction(e.currentTarget);
+    if ($('btnMpStartNow')) {
+      $('btnMpStartNow').onclick = () => {
+        this.audio.init(); this.audio.ui();
+        this.startMode(this.mode.key === 'menu' ? 'survival' : this.mode.key, !this.net.isHost);
+      };
+    }
+    if ($('btnMpLeave')) {
+      $('btnMpLeave').onclick = () => {
+        this.audio.init(); this.audio.ui();
+        this.net.leaveRoom();
+        this.renderMpPanel();
+      };
+    }
+    this.renderMpPanel();
+    this.renderMpLobby();
+  }
+
+  renderMpPanel() {
+    const box = $('mpActiveBox');
+    const pauseCopy = $('btnCopyRoomPause');
+    const menuMpBtn = $('btnMenuMp');
+    if (!box) return;
+    if (this.net && this.net.active) {
+      box.classList.remove('hidden');
+      if (pauseCopy) {
+        pauseCopy.classList.remove('hidden');
+        pauseCopy.textContent = `COPIAR LINK (SALA ${this.net.roomCode})`;
+      }
+      if (menuMpBtn) menuMpBtn.textContent = `SALA P2P: ${this.net.roomCode} (${this.net.playerCount}/8)`;
+      $('mpRoomBadge').textContent = this.net.roomCode;
+      $('mpRoleBadge').textContent = this.net.isHost ? 'HOST (SERVIDOR)' : 'CLIENTE P2P';
+      $('mpCountBadge').textContent = `${this.net.playerCount}/${this.net.maxPlayers} JOGADORES`;
+    } else {
+      box.classList.add('hidden');
+      if (pauseCopy) pauseCopy.classList.add('hidden');
+      if (menuMpBtn) menuMpBtn.textContent = 'MULTIPLAYER P2P';
+    }
+  }
+
+  renderMpLobby() {
+    const listEl = $('mpLobbyList');
+    const statusEl = $('mpLobbyStatus');
+    if (!listEl) return;
+    if (statusEl) statusEl.textContent = `(Nostr WebRTC Ativo · ${this.net.lobbyRooms.size} sala(s))`;
+    const rooms = Array.from(this.net.lobbyRooms.values()).sort((a, b) => b.ts - a.ts);
+    if (rooms.length === 0) {
+      listEl.innerHTML = `<div class="dim" style="font-size:13px">Nenhuma sala pública anunciada no momento. Crie uma sala acima ou compartilhe um link!</div>`;
+      return;
+    }
+    const modeNames = { survival: 'Sobrevivência', free: 'Exploração', training: 'Treino', race: 'Corrida', menu: 'Lobby' };
+    listEl.innerHTML = '';
+    for (const r of rooms) {
+      const row = document.createElement('div');
+      row.className = 'mp-lobby-row';
+      row.innerHTML = `<div><b class="gold">${r.code}</b> · Host: <b>${r.hostName}</b><br><span class="dim" style="font-size:11px">${modeNames[r.mode] || r.mode} ${r.wave ? `· Onda ${r.wave}` : ''} · ${r.players}/${r.max} jogadores</span></div>`;
+      const btn = document.createElement('button');
+      btn.className = 'primary';
+      btn.textContent = this.net.roomCode === r.code ? 'CONECTADO' : 'ENTRAR';
+      btn.disabled = this.net.roomCode === r.code || r.players >= r.max;
+      btn.onclick = () => {
+        this.audio.init(); this.audio.ui();
+        this.net.joinRoomByCode(r.code, false);
+        this.startMode(r.mode && r.mode !== 'menu' ? r.mode : 'survival', true);
+      };
+      row.appendChild(btn);
+      listEl.appendChild(row);
+    }
   }
 
   buildControlsTable() {
@@ -367,7 +506,7 @@ class Game {
     clearTimeout(this.pendingT);
   }
 
-  startMode(key) {
+  startMode(key, fromNet = false) {
     this.cleanupMode();
     this.showScreen(null);
     this.hud.show();
@@ -377,16 +516,26 @@ class Game {
     this.player.resetStats();
     const spawn = new THREE.Vector3(-60, 1, 30);
     this.mode = { key, godMode: false, infiniteGas: false };
+    const isNetClient = !!(this.net && this.net.active && !this.net.isHost);
+    if (this.net && this.net.active && this.net.isHost && !fromNet) {
+      this.net.broadcastWaveEvent({ ev: 'mode', mode: key, wave: this.wave || 1 });
+    }
     if (key === 'survival') {
       this.wave = 0;
-      this.player.reset(new THREE.Vector3(-20, 1, 0));
+      this.player.reset(new THREE.Vector3(-20 + rand(-4, 4), 1, rand(-4, 4)));
       this.player.yaw = -Math.PI / 2; this.player.pitch = 0.1;
-      this.nextWave(3);
+      if (isNetClient) {
+        this.waveSpawning = true;
+        this.hud.setWave(`SALA ${this.net.roomCode}`, 'Conectado ao Host P2P · sincronizando colossos...');
+        this.hud.bigMsg(`SALA ${this.net.roomCode}`, 'Modo Cooperativo P2P');
+      } else {
+        this.nextWave(3);
+      }
     } else if (key === 'training') {
       this.mode.godMode = true;
       this.player.reset(spawn);
       this.player.yaw = -Math.PI / 2;
-      this.setupTraining();
+      if (!isNetClient) this.setupTraining();
       this.hud.setWave('TREINO', 'Bonecos fixos + gigantes lentos · 1:ODM 2:APG 3:LANÇAS');
       this.hud.bigMsg('TREINO', 'Pratique lunge, arremesso de lâminas, APG e Lanças do Trovão');
     } else if (key === 'race') {
@@ -394,17 +543,21 @@ class Game {
       this.setupRace();
     } else if (key === 'free') {
       this.player.reset(spawn);
-      for (let i = 0; i < 7; i++) this.spawnRandomGiant(false);
+      if (!isNetClient) {
+        for (let i = 0; i < 7; i++) this.spawnRandomGiant(false);
+      }
       this.hud.setWave('EXPLORAÇÃO LIVRE', 'Gigantes vagando pela cidade · 1:ODM 2:APG 3:LANÇAS');
       this.hud.bigMsg('EXPLORAÇÃO', 'A cidade é sua');
     }
     this.hud.setScore(0, 0);
-    this.lockInput();
+    this.renderMpPanel();
+    if (!fromNet) this.lockInput();
   }
 
   pause() {
     if (this.state !== 'playing') return;
     this.state = 'paused';
+    this.renderMpPanel();
     this.showScreen('pause');
     this.audio.setGas(0); this.audio.setWind(0);
   }
@@ -474,15 +627,20 @@ class Game {
   }
 
   nextWave(delay = 4) {
+    if (this.net && this.net.active && !this.net.isHost) return;
     this.wave++;
     const w = this.wave;
     const boss = w % 5 === 0;
     this.hud.setWave(`ONDA ${w}`, boss ? 'UM COLOSSO SE APROXIMA' : 'Prepare-se');
     this.waveSpawning = true;
     this.pendingT = setTimeout(() => {
-      if (this.state !== 'playing' && this.state !== 'paused') return;
+      if (this.state !== 'playing' && this.state !== 'paused' && this.state !== 'upgrade') return;
+      if (this.net && this.net.active && !this.net.isHost) return;
       this.hud.bigMsg(`ONDA ${w}`, boss ? 'O COLOSSO' : 'Eles atravessaram a brecha');
       this.audio.waveStart();
+      if (this.net && this.net.active && this.net.isHost) {
+        this.net.broadcastWaveEvent({ ev: 'start', wave: w, boss });
+      }
       const count = Math.min(16, 2 + w + Math.floor(w / 3));
       const list = [];
       if (boss) list.push('colosso');
@@ -511,9 +669,13 @@ class Game {
   }
 
   waveCleared() {
+    if (this.net && this.net.active && !this.net.isHost) return;
     this.score += 250 * this.wave;
     this.hud.bigMsg('ONDA LIMPA', `+${250 * this.wave} pontos`);
     this.audio.resupply();
+    if (this.net && this.net.active && this.net.isHost) {
+      this.net.broadcastWaveEvent({ ev: 'clear', wave: this.wave });
+    }
     this.pendingT = setTimeout(() => {
       if (this.state !== 'playing') return;
       this.showUpgrades();
@@ -709,15 +871,21 @@ class Game {
 
   onPlayerDeath(cause) {
     const msgs = { eaten: 'DEVORADO', impact: 'ESMAGADO NA PAREDE', shock: 'ESMAGADO', steam: 'QUEIMADO PELO VAPOR' };
-    this.hud.bigMsg(msgs[cause] || 'VOCÊ CAIU', '', 2.5);
     this.audio.setGas(0);
-    if (this.mode.key === 'survival') {
+    const inCoopRoom = !!(this.net && this.net.active && this.net.remotes.size > 0);
+    if (this.mode.key === 'survival' && !inCoopRoom) {
+      this.hud.bigMsg(msgs[cause] || 'VOCÊ CAIU', '', 2.5);
       this.pendingT = setTimeout(() => this.gameOver(cause), 2600);
     } else {
+      this.hud.bigMsg(msgs[cause] || 'VOCÊ CAIU', inCoopRoom ? 'Reagrupando com o esquadrão P2P em 4s...' : '', 3.2);
       this.pendingT = setTimeout(() => {
         if (this.mode.key === 'menu') return;
-        this.player.reset(new THREE.Vector3(-60, 1, 30));
-      }, 2500);
+        const sp = this.mode.key === 'survival'
+          ? new THREE.Vector3(-20 + rand(-5, 5), 1, rand(-5, 5))
+          : new THREE.Vector3(-60, 1, 30);
+        this.player.reset(sp);
+        this.player.invuln = 2.5;
+      }, inCoopRoom ? 4000 : 2500);
     }
   }
 
@@ -757,14 +925,18 @@ class Game {
       this.stats.time += gdt;
       this.stats.maxSpeed = Math.max(this.stats.maxSpeed, this.player.speed);
       if (this.comboT > 0) { this.comboT -= gdt; if (this.comboT <= 0) { this.combo = 0; this.hud.setScore(this.score, 0); } }
-      if (this.mode.key === 'survival' && !this.waveSpawning && this.player.alive && this.giants.aliveCount === 0 && !this.clearedFlag) {
-        this.clearedFlag = true;
-        this.waveCleared();
+      const anyAlive = this.player.alive || (this.net && this.net.active && this.net.getAllAlivePlayers().length > 0);
+      if (this.mode.key === 'survival' && !this.waveSpawning && anyAlive && this.giants.aliveCount === 0 && !this.clearedFlag) {
+        if (!this.net || !this.net.active || this.net.isHost) {
+          this.clearedFlag = true;
+          this.waveCleared();
+        }
       }
       if (this.giants.aliveCount > 0) this.clearedFlag = false;
       if (this.mode.key === 'survival') this.updateWaveSub();
       if (this.mode.key === 'race') this.updateRace(gdt);
       this.updateFlares(gdt);
+      if (this.net) this.net.update(dt);
       this.hud.update(dt);
     } else if (this.state === 'menu') {
       this.menuT += dt;
@@ -773,6 +945,13 @@ class Game {
       this.camera.lookAt(0, 20, 0);
       if (this.camera.fov !== 60) { this.camera.fov = 60; this.camera.updateProjectionMatrix(); }
       this.giants.update(dt, this.ctx);
+      if (this.net) this.net.update(dt);
+    } else {
+      // Se pausado ou escolhendo melhoria em sala multiplayer ativa, mantém a simulação P2P viva
+      if (this.net && this.net.active) {
+        this.giants.update(gdt, this.ctx);
+        this.net.update(dt);
+      }
     }
     this.effects.update(gdt, this.camera);
     this.world.update(dt, this.camera.position);

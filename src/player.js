@@ -660,6 +660,9 @@ export class Player {
     const muzzle = this.pos.clone().add(new THREE.Vector3(0, 0.85, 0)).addScaledVector(this.camFwd, 0.9);
     this.game.effects.sparks(muzzle, doubleShot ? 22 : 12);
     this.game.effects.puff(muzzle, this.camFwd.clone().multiplyScalar(8), '#e6e0d6', doubleShot ? 0.65 : 0.4, 0.45);
+    if (this.game.net && this.game.net.active) {
+      this.game.net.broadcastActionFx('apg', muzzle, this.camFwd, { double: doubleShot });
+    }
 
     const maxR = doubleShot ? CFG.apgDoubleRange : CFG.apgRange;
     // traçantes de chumbo (pellet cone)
@@ -696,11 +699,7 @@ export class Player {
     if (bestHit) {
       const distFactor = clamp(1.25 - bestHit.dist / (maxR * 1.15), 0.45, 1.25);
       const dmg = Math.round((CFG.apgBaseDmg * (doubleShot ? 1.75 : 1.0) * distFactor + this.speed * 5) * this.st.dmgMul);
-      const res = bestHit.giant.receiveHit(bestHit.zone, dmg, bestHit.mesh, this.game.ctx);
-      if (res.r !== 'nothing') {
-        this.game.onPlayerHit(res, bestHit, dmg, bestHit.point);
-        this.stress = Math.max(0, this.stress - (res.r === 'kill' ? 33 : 8));
-      }
+      this.applyHitOnGiant(bestHit.giant, bestHit.zone, dmg, bestHit.mesh, bestHit.point, 33, 8);
     }
   }
 
@@ -763,6 +762,9 @@ export class Player {
     this.game.effects.addShake(0.65);
     this.game.effects.sparks(pos, 55);
     this.game.effects.bigSteam(pos, 2.2, 12);
+    if (this.game.net && this.game.net.active) {
+      this.game.net.broadcastActionFx('spearExplode', pos, null);
+    }
     for (let i = 0; i < 24; i++) {
       const v = new THREE.Vector3(rand(-1, 1), rand(-0.3, 1.2), rand(-1, 1)).normalize().multiplyScalar(rand(8, 26));
       this.game.effects.glow.spawn({ pos, vel: v, size: rand(0.25, 0.55), life: rand(0.25, 0.55), grav: 10, color: i % 2 ? '#ff7a2a' : '#ffe07a', floor: false });
@@ -798,16 +800,11 @@ export class Player {
       if (hitZone && hitMesh) {
         // Lança do Trovão estraçalha a placa de armadura do Blindado na hora!
         if (g.T.armored && g.armorHP > 0) {
-          g.armorHP = 1;
-          const bRes = g.receiveHit('nape', 999, g.m.nape, this.game.ctx);
-          this.game.onPlayerHit(bRes, { giant: g, mesh: g.m.nape, zone: 'nape' }, 999, pos);
+          if (!this.game.net || !this.game.net.active || this.game.net.isHost) g.armorHP = 1;
+          this.applyHitOnGiant(g, 'nape', 999, g.m.nape, pos, 33, 10);
         }
         const dmg = Math.round(CFG.spearBaseDmg * s.dmgMul * this.st.dmgMul);
-        const res = g.receiveHit(hitZone, dmg, hitMesh, this.game.ctx);
-        if (res.r !== 'nothing') {
-          this.game.onPlayerHit(res, { giant: g, mesh: hitMesh, zone: hitZone }, dmg, pos);
-          this.stress = Math.max(0, this.stress - (res.r === 'kill' ? 33 : 10));
-        }
+        this.applyHitOnGiant(g, hitZone, dmg, hitMesh, pos, 33, 10);
       }
     }
   }
@@ -828,11 +825,7 @@ export class Player {
         if (hg && (!hw || hg.t <= hw.t)) {
           const zone = hg.mesh.userData.zone || 'body';
           const dmg = Math.round((280 + this.speed * 6) * p.durRatio * this.st.dmgMul);
-          const res = hg.giant.receiveHit(zone, dmg, hg.mesh, this.game.ctx);
-          if (res.r !== 'nothing') {
-            this.game.onPlayerHit(res, { giant: hg.giant, mesh: hg.mesh, zone }, dmg, hg.point);
-            this.stress = Math.max(0, this.stress - (res.r === 'kill' ? 33 : 8));
-          }
+          this.applyHitOnGiant(hg.giant, zone, dmg, hg.mesh, hg.point, 33, 8);
           this.game.effects.sparks(hg.point, 12);
           this.scene.remove(p.mesh);
           this.projectiles.splice(i, 1);
@@ -917,6 +910,25 @@ export class Player {
     for (const h of this.hooks) if (h.attached) h.len = Math.max(h.len, this.pos.distanceTo(h.pivotAnchor(_a)));
   }
 
+  applyHitOnGiant(giant, zone, dmg, mesh, hitPoint, stressReliefKill = 33, stressReliefHit = 6) {
+    const G = this.game;
+    const net = G.net;
+    if (net && net.active && !net.isHost) {
+      giant.flash = 0.15;
+      G.effects.blood(hitPoint, null, 10, giant.s * 0.45);
+      net.sendHitRequest(giant, zone, dmg, hitPoint);
+      return true;
+    }
+    const res = giant.receiveHit(zone, dmg, mesh, G.ctx);
+    if (res.r === 'nothing') return false;
+    if (net && net.active && net.isHost) {
+      net.broadcastHitConfirmed(giant, zone, dmg, res, hitPoint, net.localId, net.nickname);
+    }
+    G.onPlayerHit(res, { giant, mesh, zone }, dmg, hitPoint);
+    this.stress = Math.max(0, this.stress - (res.r === 'kill' ? stressReliefKill : stressReliefHit));
+    return true;
+  }
+
   doHit(q, dmgBonus = 1) {
     const G = this.game;
     const spd = this.speed;
@@ -929,12 +941,10 @@ export class Player {
       return;
     }
     const dmg = Math.round(spd * CFG.dmgPerSpeed * this.st.dmgMul * dmgBonus);
-    const res = q.giant.receiveHit(q.zone, dmg, q.mesh, G.ctx);
-    if (res.r === 'nothing') return;
+    const landed = this.applyHitOnGiant(q.giant, q.zone, dmg, q.mesh, p, 33, 5);
+    if (!landed) return;
     this.blades = Math.max(0, this.blades - (6 + dmg * 0.025) * this.st.wearMul);
     if (this.blades <= 0) { G.audio.bladeBreak(); G.effects.sparks(this.pos, 16); }
-    G.onPlayerHit(res, q, dmg, p);
-    this.stress = Math.max(0, this.stress - (res.r === 'kill' ? 33 : 5));
   }
 
   startReload() {
@@ -973,7 +983,12 @@ export class Player {
     if (this.flares[kind] <= 0) { this.game.hud.flashMsg('Sem sinalizadores — reabasteça', '#ff9a7a'); return; }
     this.flares[kind]--;
     this.flareCD = 0.6;
-    this.game.spawnFlare(kind, this.pos.clone().add(new THREE.Vector3(0, 0.8, 0)), this.camFwd.clone().multiplyScalar(70).add(this.vel));
+    const fPos = this.pos.clone().add(new THREE.Vector3(0, 0.8, 0));
+    const fVel = this.camFwd.clone().multiplyScalar(70).add(this.vel);
+    this.game.spawnFlare(kind, fPos, fVel);
+    if (this.game.net && this.game.net.active) {
+      this.game.net.broadcastActionFx('flare', fPos, fVel, { flareKind: kind });
+    }
   }
 
   damage(amount, src) {

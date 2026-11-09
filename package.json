@@ -10,7 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "three": "^0.170.0"
+    "three": "^0.170.0",
+    "trystero": "^0.26.0"
   },
   "devDependencies": {
     "puppeteer-core": "^23.10.0",

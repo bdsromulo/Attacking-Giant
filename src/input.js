@@ -49,8 +49,20 @@ export class Input {
   lock() {
     try {
       const p = this.canvas.requestPointerLock({ unadjustedMovement: true });
-      if (p && p.catch) p.catch(() => this.canvas.requestPointerLock());
-    } catch { this.canvas.requestPointerLock(); }
+      if (p && p.catch) {
+        p.catch(() => {
+          try {
+            const p2 = this.canvas.requestPointerLock();
+            if (p2 && p2.catch) p2.catch(() => {});
+          } catch { /* ignore */ }
+        });
+      }
+    } catch {
+      try {
+        const p2 = this.canvas.requestPointerLock();
+        if (p2 && p2.catch) p2.catch(() => {});
+      } catch { /* ignore */ }
+    }
   }
   unlock() { if (document.pointerLockElement) document.exitPointerLock(); }
 

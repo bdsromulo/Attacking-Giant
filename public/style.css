@@ -148,3 +148,51 @@ select { font-family: var(--font); background: #222; color: var(--ink); border: 
 #board { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--panel); border: 1px solid var(--line); padding: 16px 30px; min-width: 360px; line-height: 1.9; }
 #board h3 { margin: 0 0 8px; letter-spacing: 3px; }
 #board b { float: right; color: var(--gold); margin-left: 30px; }
+
+/* ---------- MULTIPLAYER P2P ---------- */
+.gold { color: var(--gold); }
+button.mp-btn { border-color: #4aa896; background: rgba(24, 58, 52, 0.72); color: #b8ffee; }
+button.mp-btn:hover { background: rgba(45, 118, 104, 0.85); border-color: #5dffda; }
+#panel-mp { width: 540px; }
+#panel-mp input[type=text], #panel-mp input[type=password] {
+  font-family: var(--font); background: rgba(10, 9, 8, 0.85); color: var(--ink);
+  border: 1px solid var(--line); padding: 7px 10px; font-size: 13px; outline: none;
+}
+#panel-mp input[type=text]:focus, #panel-mp input[type=password]:focus { border-color: var(--gold); }
+.mp-box { background: rgba(20, 48, 42, 0.65); border: 1px solid #4aa896; padding: 10px 12px; margin-bottom: 12px; }
+.mp-status-row { display: flex; align-items: center; justify-content: space-between; font-size: 14px; margin-bottom: 8px; }
+.mp-pill { background: rgba(93, 255, 218, 0.18); border: 1px solid #5dffda; color: #5dffda; font-size: 11px; font-weight: 800; padding: 2px 8px; letter-spacing: 1px; }
+.mp-actions-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.mp-actions-row button.small { margin-top: 0; flex: 1; text-align: center; padding: 7px 8px; font-size: 11px; letter-spacing: 1px; }
+.mp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+.mp-card { border: 1px solid var(--line); background: rgba(0, 0, 0, 0.32); padding: 10px 12px; display: flex; flex-direction: column; justify-content: space-between; }
+.mp-card h4 { margin: 0 0 6px; color: var(--gold); font-size: 13px; letter-spacing: 1px; }
+.mp-card button { padding: 9px 10px; font-size: 12px; letter-spacing: 2px; }
+.mp-lobby-list { max-height: 135px; overflow-y: auto; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.35); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.mp-lobby-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; background: rgba(255, 255, 255, 0.04); border-left: 3px solid #5dffda; font-size: 13px; }
+.mp-lobby-row button { width: auto; padding: 5px 12px; font-size: 11px; letter-spacing: 1.5px; text-align: center; }
+.mp-turn-details { margin-top: 12px; font-size: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.mp-turn-details summary { cursor: pointer; color: var(--dim); font-weight: 700; letter-spacing: 1px; }
+
+#netBadge {
+  position: absolute; left: 18px; top: 196px; width: 170px; text-align: center;
+  background: rgba(15, 24, 22, 0.78); border: 1px solid rgba(93, 255, 218, 0.45);
+  padding: 5px 6px; font-size: 11px; letter-spacing: 1px; color: #d8fff6;
+}
+#netBadge b { color: var(--gold); }
+#netBadge em { font-style: normal; color: #5dffda; font-weight: 800; }
+#netBadge .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #5dff7a; margin-right: 5px; box-shadow: 0 0 6px #5dff7a; }
+
+.mp-tag {
+  position: absolute; transform: translate(-50%, -100%); pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  text-shadow: 0 1px 4px #000, 0 0 2px #000; transition: opacity 0.1s;
+}
+.mp-tag .mp-name { font-size: 12px; font-weight: 800; color: #b8ffee; letter-spacing: 0.5px; background: rgba(10, 18, 16, 0.65); padding: 1px 6px; border: 1px solid rgba(93, 255, 218, 0.35); white-space: nowrap; }
+.mp-tag .mp-hp { width: 54px; height: 4px; background: rgba(0, 0, 0, 0.65); border: 1px solid rgba(255, 255, 255, 0.2); overflow: hidden; }
+.mp-tag .mp-hp i { display: block; height: 100%; width: 100%; background: #5dff7a; }
+
+.mp-board-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 4px; }
+.mp-board-table th { text-align: left; color: var(--dim); font-size: 11px; letter-spacing: 1px; border-bottom: 1px solid var(--line); padding: 4px 8px; }
+.mp-board-table td { padding: 5px 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+.mp-board-table td b { float: none; margin-left: 0; color: #b8ffee; }

@@ -56,6 +56,7 @@
         <button data-mode="training">TREINO</button>
         <button data-mode="race">CORRIDA</button>
         <button data-mode="free">EXPLORAÇÃO LIVRE</button>
+        <button data-panel="mp" id="btnMenuMp" class="mp-btn">MULTIPLAYER P2P</button>
         <div class="sep"></div>
         <button data-panel="skins">PERSONAGEM</button>
         <button data-panel="controls">CONTROLES</button>
@@ -65,8 +66,65 @@
         <h3>A muralha caiu.</h3>
         <p>Colossos atravessam a brecha a leste. Você é da Ordem do Gancho: cabos de aço, gás comprimido e duas lâminas.</p>
         <p>Corte a <b>nuca</b> para matar. Quanto mais rápido você estiver, mais fundo o corte.</p>
-        <p class="dim">Clique em um modo para começar. O mouse será capturado — ESC para pausar.</p>
+        <p class="dim">Clique em um modo para começar ou abra <b>MULTIPLAYER P2P</b> para jogar cooperativo sem servidor via WebRTC.</p>
         <div id="records"></div>
+      </div>
+      <div class="col panel hidden" id="panel-mp">
+        <h3>Multiplayer Online P2P <small class="dim">(WebRTC · Custo Zero)</small></h3>
+        <p class="dim" style="font-size:12px;margin-top:0">Quem cria a sala atua como <b>Host (Listen Server)</b> em topologia estrela (2–8 jogadores) via Trystero/Nostr + STUN/TURN, com migração automática de Host.</p>
+
+        <div id="mpActiveBox" class="mp-box hidden">
+          <div class="mp-status-row">
+            <span>SALA: <b id="mpRoomBadge" class="gold">------</b></span>
+            <span id="mpRoleBadge" class="mp-pill">HOST</span>
+            <span id="mpCountBadge" class="dim">1/8</span>
+          </div>
+          <div class="mp-actions-row">
+            <button id="btnMpCopyLink" class="small primary">COPIAR LINK (?room=...)</button>
+            <button id="btnMpStartNow" class="small">ENTRAR EM CAMPO</button>
+            <button id="btnMpLeave" class="small">SAIR DA SALA</button>
+          </div>
+        </div>
+
+        <label>Seu Codinome
+          <input type="text" id="mpName" maxlength="16" placeholder="Ex: Levi_Ackerman" />
+        </label>
+
+        <div class="mp-grid">
+          <div class="mp-card">
+            <h4>Criar Nova Sala (Host)</h4>
+            <label>Modo
+              <select id="mpModeSelect">
+                <option value="survival">Sobrevivência (Co-op)</option>
+                <option value="free">Exploração Livre</option>
+                <option value="training">Treino em Grupo</option>
+                <option value="race">Corrida</option>
+              </select>
+            </label>
+            <label class="chk" style="font-size:13px"><input type="checkbox" id="mpPublicChk" checked /> Anunciar na Sala-Lobby Pública</label>
+            <button id="btnMpCreate" class="primary" style="width:100%;text-align:center">CRIAR SALA (HOST)</button>
+          </div>
+
+          <div class="mp-card">
+            <h4>Entrar por Código</h4>
+            <p class="dim" style="font-size:12px">Cole o código de 6 letras ou abra o link <code>?room=CODIGO</code>.</p>
+            <input type="text" id="mpCodeInput" maxlength="8" placeholder="CÓDIGO (ex: ABC123)" style="text-transform:uppercase;width:100%;margin-bottom:8px" />
+            <button id="btnMpJoinCode" style="width:100%;text-align:center">ENTRAR NA SALA</button>
+          </div>
+        </div>
+
+        <h4 style="margin:14px 0 6px;letter-spacing:1px">Salas Abertas no Lobby Global <small class="dim" id="mpLobbyStatus">(conectando ao Nostr...)</small></h4>
+        <div id="mpLobbyList" class="mp-lobby-list">
+          <div class="dim" style="font-size:13px">Nenhuma sala pública anunciada no momento. Crie uma sala acima!</div>
+        </div>
+
+        <details class="mp-turn-details">
+          <summary>Configuração Avançada NAT / TURN (Opcional)</summary>
+          <p class="dim" style="font-size:12px">Por padrão o jogo já usa STUN (Google/Cloudflare) + OpenRelay TURN gratuito (Metered). Caso queira usar credenciais TURN próprias (Cloudflare Calls / Metered):</p>
+          <label>URL TURN <input type="text" id="mpTurnUrl" placeholder="turn:openrelay.metered.ca:443" /></label>
+          <label>Usuário <input type="text" id="mpTurnUser" placeholder="openrelayproject" /></label>
+          <label>Credencial <input type="password" id="mpTurnPass" placeholder="openrelayproject" /></label>
+        </details>
       </div>
       <div class="col panel hidden" id="panel-controls">
         <h3>Controles</h3>
@@ -97,6 +155,7 @@
   <div id="pause" class="screen hidden">
     <h1>PAUSADO</h1>
     <button id="btnResume" class="primary">CONTINUAR</button>
+    <button id="btnCopyRoomPause" class="hidden">COPIAR LINK DA SALA</button>
     <button id="btnRestart">REINICIAR</button>
     <button id="btnQuit">MENU PRINCIPAL</button>
   </div>

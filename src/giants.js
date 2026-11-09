@@ -21,11 +21,12 @@ const DOWN = new THREE.Vector3(0, -1, 0);
 let NEXT_ID = 1;
 
 export class Giant {
-  constructor(typeKey, x, z, scene) {
-    this.id = NEXT_ID++;
+  constructor(typeKey, x, z, scene, forcedId = null, forcedH = null) {
+    this.id = forcedId != null ? forcedId : NEXT_ID++;
+    if (forcedId != null && forcedId >= NEXT_ID) NEXT_ID = forcedId + 1;
     this.typeKey = typeKey;
-    this.T = GIANT_TYPES[typeKey];
-    this.H = rand(this.T.h[0], this.T.h[1]);
+    this.T = GIANT_TYPES[typeKey] || GIANT_TYPES.comum;
+    this.H = forcedH != null ? forcedH : rand(this.T.h[0], this.T.h[1]);
     this.s = this.H / 10;
     this.m = buildGiantModel({ armored: this.T.armored, boss: this.T.boss, dummy: this.T.dummy, fat: this.T.boss ? 1.2 : undefined });
     this.root = this.m.root;
@@ -37,6 +38,9 @@ export class Giant {
     this.scene = scene;
     this.pos = this.root.position;
     this.vel = new THREE.Vector3();
+    this.netTargetPos = null;
+    this.netTargetHeading = null;
+    this.netSpeed = 0;
     this.state = this.T.dummy ? 'idle' : 'wander';
     this.alive = true;
     this.napeHP = this.T.nape;
@@ -183,6 +187,19 @@ export class Giant {
     return _v2.set(Math.cos(a) * r, 0, Math.sin(a) * r);
   }
 
+  pickNearestTarget(ctx) {
+    const net = ctx.game && ctx.game.net;
+    const candidates = net && net.active ? net.getAllAlivePlayers() : (ctx.player.alive ? [ctx.player] : []);
+    if (candidates.length === 0) return ctx.player;
+    let best = candidates[0], bestD = Infinity;
+    for (const c of candidates) {
+      const dx = c.pos.x - this.pos.x, dz = c.pos.z - this.pos.z;
+      const d = dx * dx + dz * dz;
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    return best;
+  }
+
   update(dt, ctx) {
     const { player, world, effects, audio } = ctx;
     this.flash = Math.max(0, this.flash - dt);
@@ -190,27 +207,56 @@ export class Giant {
 
     if (this.state === 'dying' || this.state === 'dead') { this.updateDeath(dt, ctx); return; }
 
+    const isNetClient = !!(ctx.game && ctx.game.net && ctx.game.net.active && !ctx.game.net.isHost);
+    if (isNetClient) {
+      const legsOut = this.limbs.legL.sev || this.limbs.legR.sev;
+      const targetDown = this.netDowned != null ? this.netDowned : (legsOut ? 1 : 0);
+      this.downed = damp(this.downed, targetDown, 6, dt);
+      this.blind = this.limbs.eyes.sev ? 1 : damp(this.blind, 0, 3, dt);
+      if (this.netTargetPos) {
+        const dx = this.netTargetPos.x - this.pos.x;
+        const dz = this.netTargetPos.z - this.pos.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 60) {
+          this.pos.copy(this.netTargetPos);
+          this.netSpeed = 0;
+        } else {
+          const prevX = this.pos.x, prevZ = this.pos.z;
+          this.pos.lerp(this.netTargetPos, Math.min(1, dt * 10));
+          const stepDist = Math.hypot(this.pos.x - prevX, this.pos.z - prevZ);
+          this.netSpeed = damp(this.netSpeed, dt > 1e-4 ? stepDist / dt : 0, 8, dt);
+        }
+      }
+      if (this.netTargetHeading != null) {
+        this.heading += angleDiff(this.netTargetHeading, this.heading) * Math.min(1, dt * 10);
+        this.root.rotation.y = this.heading;
+      }
+      this.animate(dt, this.T.dummy ? 0 : this.netSpeed, ctx, this.pickNearestTarget(ctx));
+      return;
+    }
+
     const legsOut = this.limbs.legL.sev || this.limbs.legR.sev;
     this.downed = damp(this.downed, legsOut ? 1 : 0, 3, dt);
     this.blind = this.limbs.eyes.sev ? 1 : damp(this.blind, 0, 2, dt);
 
-    const toP = _v.copy(player.pos).sub(this.pos); toP.y = 0;
+    const tgtPlayer = this.pickNearestTarget(ctx);
+    const toP = _v.copy(tgtPlayer.pos).sub(this.pos); toP.y = 0;
     const distP = toP.length();
     let moveSpeed = 0;
     let desired = this.heading;
 
     if (this.T.dummy) {
-      this.animate(dt, 0, ctx);
+      this.animate(dt, 0, ctx, tgtPlayer);
       return;
     }
 
     // estado
-    if (player.alive && !this.grab) {
+    if (tgtPlayer.alive && !this.grab) {
       const aggro = this.alwaysChase ? 1e9 : (this.T.boss ? 160 : 95);
       if (this.state === 'wander' && distP < aggro && !this.limbs.eyes.sev) this.state = 'chase';
       if (this.state === 'chase' && ((!this.alwaysChase && distP > 180) || this.limbs.eyes.sev)) this.state = 'wander';
     }
-    if (!player.alive && this.state === 'chase') this.state = 'wander';
+    if (!tgtPlayer.alive && this.state === 'chase') this.state = 'wander';
 
     if (this.state === 'wander') {
       this.wanderT -= dt;
@@ -223,7 +269,7 @@ export class Giant {
       desired = Math.atan2(d.x, d.z);
       moveSpeed = this.T.speed * 0.45;
     } else if (this.state === 'chase') {
-      const tgt = this.computeTarget(player, world);
+      const tgt = this.computeTarget(tgtPlayer, world);
       const d = _v2.copy(tgt).sub(this.pos); d.y = 0;
       desired = Math.atan2(d.x, d.z);
       moveSpeed = this.T.speed;
@@ -232,11 +278,12 @@ export class Giant {
         if (this.erraticT <= 0) { this.erraticT = rand(0.6, 2); this.erraticOff = rand(-1.1, 1.1); }
         desired += this.erraticOff * Math.min(1, distP / 30);
       }
-      // ataque: agarrar
+      // ataque: agarrar (no jogador local se estiver próximo)
       this.grabCD -= dt;
       const reach = (2.4 + 2.2 + 1.2) * this.s * this.T.reach + 1.85 * this.s;
+      const distLocal = Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z);
       const pyRel = player.pos.y;
-      if (!this.grab && this.grabCD <= 0 && distP < reach && pyRel < this.H * 1.15 && player.alive && !player.grabbedBy) {
+      if (!this.grab && this.grabCD <= 0 && distLocal < reach && pyRel < this.H * 1.15 && player.alive && !player.grabbedBy) {
         const local = this.root.worldToLocal(_v2.copy(player.pos));
         const side = local.x >= 0 ? 'L' : 'R';
         const alt = side === 'L' ? 'R' : 'L';
@@ -249,7 +296,7 @@ export class Giant {
       // salto do Errante
       if (this.T.leap && !this.airborne && !legsOut) {
         this.leapCD -= dt;
-        if (this.leapCD <= 0 && distP > 16 && distP < 55 && player.pos.y < this.H * 1.5) {
+        if (this.leapCD <= 0 && distP > 16 && distP < 55 && tgtPlayer.pos.y < this.H * 1.5) {
           this.leapCD = rand(5, 9);
           const flight = 1.3;
           this.vel.set(toP.x / flight, 0.5 * CFG.gravity * flight * 0.9, toP.z / flight);
@@ -260,7 +307,7 @@ export class Giant {
       // explosão de vapor do Colosso
       if (this.T.boss) {
         this.steamCD -= dt;
-        const close = player.pos.distanceTo(this.m.neck.getWorldPosition(_v2)) < this.H * 0.9;
+        const close = tgtPlayer.pos.distanceTo(this.m.neck.getWorldPosition(_v2)) < this.H * 0.9;
         if (this.steamCharge > 0) {
           this.steamCharge -= dt;
           effects.bigSteam(this.m.spine.getWorldPosition(_v2).add(new THREE.Vector3(rand(-1, 1) * this.s * 2, rand(0, 4) * this.s, rand(-1, 1) * this.s * 2)), this.s * 0.6, 2);
@@ -295,7 +342,7 @@ export class Giant {
         if (o === this || !o.alive) continue;
         const dx = this.pos.x - o.pos.x, dz = this.pos.z - o.pos.z;
         const d = Math.hypot(dx, dz) || 0.01, min = rad + o.radius + 2;
-        if (d < min) { ax += (dx / d) * (min - d) / min * 2; az += (dz / d) * (min - d) / min * 2; }
+        if (d < min) { ax += (dx / d) * (min - d) / min * 2; az += (dz / d) * (min - d) * (min - d) / min * 2; }
       }
     }
     const steer = Math.atan2(ax, az);
@@ -317,7 +364,7 @@ export class Giant {
     }
     this.blockWall();
 
-    this.animate(dt, moveSpeed, ctx);
+    this.animate(dt, moveSpeed, ctx, tgtPlayer);
     this.updateGrab(dt, ctx);
   }
 
@@ -361,7 +408,7 @@ export class Giant {
     }
   }
 
-  animate(dt, speed, ctx) {
+  animate(dt, speed, ctx, tgtPlayer = null) {
     const m = this.m;
     const legSc = this.s;
     const moving = speed > 0.1 || this.airborne;
@@ -400,13 +447,14 @@ export class Giant {
       a.shoulder.quaternion.setFromEuler(new THREE.Euler(targetX + flail * 0.5, 0, sgn * (0.12 + Math.abs(flail) * 0.4)));
       a.elbow.rotation.x = (this.blind > 0.5 || this.stunT > 0) ? -1.6 : -0.25 - (this.T.erratic ? 0.5 : 0);
     }
-    // cabeça segue o jogador
-    const toP = _v.copy(ctx.player.pos);
+    // cabeça segue o jogador mais próximo (ou usa lookYaw/lookPitch sincronizado do Host)
+    const lookTgt = tgtPlayer || ctx.player;
+    const toP = _v.copy(lookTgt.pos);
     const nw = m.neck.getWorldPosition(_v2);
     toP.sub(nw);
     const yawW = Math.atan2(toP.x, toP.z);
-    const yaw = clamp(angleDiff(yawW, this.heading), -1.0, 1.0);
-    const pitch = clamp(-Math.atan2(toP.y, Math.hypot(toP.x, toP.z)), -0.7, 0.6);
+    const yaw = this.netLookYaw != null ? this.netLookYaw : clamp(angleDiff(yawW, this.heading), -1.0, 1.0);
+    const pitch = this.netLookPitch != null ? this.netLookPitch : clamp(-Math.atan2(toP.y, Math.hypot(toP.x, toP.z)), -0.7, 0.6);
     const watching = this.state === 'chase' && this.blind < 0.5;
     this.lookYaw = damp(this.lookYaw, watching ? yaw : Math.sin(this.phase * 0.3) * 0.3, 4, dt);
     this.lookPitch = damp(this.lookPitch, watching ? pitch : 0, 4, dt);
@@ -552,10 +600,78 @@ export class GiantManager {
     this.ray = new THREE.Raycaster();
   }
 
-  spawn(type, x, z) {
-    const g = new Giant(type, x, z, this.scene);
+  spawn(type, x, z, forcedId = null, forcedH = null) {
+    const g = new Giant(type, x, z, this.scene, forcedId, forcedH);
     this.giants.push(g);
     return g;
+  }
+
+  getById(id) {
+    for (const g of this.giants) if (g.id === id) return g;
+    return null;
+  }
+
+  applyNetworkSnapshot(list, ctx) {
+    const seen = new Set();
+    for (const s of list) {
+      seen.add(s.id);
+      let g = this.getById(s.id);
+      if (!g) {
+        g = this.spawn(s.tk || 'comum', s.x || 0, s.z || 0, s.id, s.h);
+        g.heading = s.hd || 0;
+        g.root.rotation.y = g.heading;
+      }
+      if (!g.netTargetPos) g.netTargetPos = new THREE.Vector3();
+      g.netTargetPos.set(s.x, s.y || 0, s.z);
+      g.netTargetHeading = s.hd;
+      g.napeHP = s.nh != null ? s.nh : g.napeHP;
+      g.armorHP = s.ah != null ? s.ah : g.armorHP;
+      g.netDowned = s.dn;
+      g.netLookYaw = s.ly;
+      g.netLookPitch = s.lp;
+
+      if (g.T.armored && g.armorHP <= 0 && g.m.armor && g.m.armor[0] && g.m.armor[0].visible) {
+        const plate = g.m.armor[0];
+        plate.visible = false;
+        plate.userData.zone = 'body';
+        g.zoneMeshes = g.zoneMeshes.filter((z) => z !== plate);
+      }
+
+      const mask = s.lb || 0;
+      const limbBits = [['armL', 1], ['armR', 2], ['legL', 4], ['legR', 8], ['eyes', 16]];
+      for (const [key, bit] of limbBits) {
+        const L = g.limbs[key];
+        if (!L) continue;
+        const shouldSev = !!(mask & bit);
+        if (shouldSev && !L.sev) {
+          if (key === 'eyes') {
+            L.sev = true; L.t = 9; g.blind = 1;
+          } else {
+            g.sever(key, ctx);
+          }
+        } else if (!shouldSev && L.sev) {
+          L.sev = false;
+          L.group.visible = true;
+          L.group.scale.setScalar(1);
+          L.regrow = 0;
+        }
+      }
+
+      if (!s.al && g.alive) {
+        g.kill(ctx);
+      } else if (s.al && g.alive && s.st && s.st !== 'dying' && s.st !== 'dead') {
+        g.state = s.st;
+      }
+    }
+
+    for (let i = this.giants.length - 1; i >= 0; i--) {
+      const g = this.giants[i];
+      if (!seen.has(g.id) && g.state !== 'dying' && g.state !== 'dead') {
+        ctx.player.detachFromGiant(g);
+        g.dispose();
+        this.giants.splice(i, 1);
+      }
+    }
   }
 
   clear() { for (const g of this.giants) g.dispose(); this.giants.length = 0; }
