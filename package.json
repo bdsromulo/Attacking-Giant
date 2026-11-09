@@ -1,7 +1,7 @@
 {
-  "name": "bastiao",
-  "version": "0.1.0",
-  "description": "BASTIÃO — Caçadores de Colossos. Jogo de ação 3D com ganchos duplos e gigantes, feito em Three.js.",
+  "name": "attacking-giant",
+  "version": "0.2.0",
+  "description": "ATTACKING GIANT — Attack on Titan 3D Web Game em Three.js com Multiplayer P2P WebRTC.",
   "private": true,
   "type": "module",
   "scripts": {

@@ -5,7 +5,7 @@ import { buildPlayerModel, SKINS } from './models.js';
 import { GIANT_TYPES } from './giants.js';
 import { clamp, damp, angleDiff, rand } from './util.js';
 
-const APP_ID = 'bastiao-aot-p2p-v1';
+const APP_ID = 'attacking-giant-p2p-v1';
 const LOBBY_ROOM_ID = '__bastiao_global_lobby__';
 const MAX_PLAYERS = 8;
 
